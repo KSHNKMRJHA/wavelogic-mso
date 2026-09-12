@@ -54,6 +54,21 @@ Open **http://localhost:8501** in your browser.
 > Keep the app pinned to loopback for privacy:
 > `streamlit run app.py --server.address 127.0.0.1`
 
+## Deploy to the cloud (free)
+
+Free options that work with this repository out of the box:
+
+- **Streamlit Community Cloud** (easiest): sign in at <https://share.streamlit.io>
+  with your GitHub account, click **Create app / Deploy**, pick the
+  `wavelogic-mso` repo, set **Main file path** to `app.py`, keep Python 3.12
+  (`runtime.txt` is already provided), and deploy.
+- **Hugging Face Spaces**: create a new Space, choose the **Streamlit** SDK,
+  then either connect your GitHub repo or `git push` this repository to the
+  Space. The included `Dockerfile` and `.python-version` are picked up
+  automatically.
+
+Both run the identical app; no accounts are needed to *use* it, only to host it.
+
 ## Trying it with a sample
 
 Import `sample_data/uart_example.csv` (a 9600-baud UART frame at 16 samples per

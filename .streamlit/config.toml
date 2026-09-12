@@ -6,8 +6,6 @@ secondaryBackgroundColor = "#111A2E"
 textColor = "#DBE4F5"
 
 [server]
-address = "127.0.0.1"
-port = 8501
 headless = true
 maxUploadSize = 100
 
