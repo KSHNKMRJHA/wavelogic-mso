@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Compile all sources
+        run: python -m compileall -q analyzer_core.py app.py branding.py pages
+
+      - name: Import smoke test
+        run: python -c "import streamlit, numpy, pandas, plotly; import analyzer_core; print('Imports OK')"
+
+      - name: Decoder smoke test
+        run: python -c "import analyzer_core as c; print([f for f in dir(c) if f.startswith('decode_')])"
