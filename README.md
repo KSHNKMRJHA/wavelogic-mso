@@ -6,6 +6,9 @@ decoder that runs entirely on CSV files, in your browser.
 > Designed by **Piston** · Developed by **Kishan J.**
 > Made with love and Open-Source AI — free forever, like it should be.
 
+**▶ Try it live: [wavelogic.streamlit.app](https://wavelogic.streamlit.app)** —
+free community-cloud deployment, no install needed.
+
 WaveLogic MSO turns plain CSV recordings into a fully interactive scope: upload
 a capture, view any combination of channels on a shared time axis, zoom and
 cursor through it, compare signals, and decode the protocols hidden in the
@@ -62,6 +65,7 @@ Free options that work with this repository out of the box:
   with your GitHub account, click **Create app / Deploy**, pick the
   `wavelogic-mso` repo, set **Main file path** to `app.py`, keep Python 3.12
   (`runtime.txt` is already provided), and deploy.
+  The project's live deployment is **<https://wavelogic.streamlit.app>**.
 - **Hugging Face Spaces**: create a new Space, choose the **Streamlit** SDK,
   then either connect your GitHub repo or `git push` this repository to the
   Space. The included `Dockerfile` and `.python-version` are picked up
