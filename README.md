@@ -176,6 +176,12 @@ and is typically published as a GitHub Release asset.
 - **Made with:** love and Open-Source AI
 - **Powered by:** Streamlit, NumPy, pandas, Plotly, Python
 
+## Contact & Connect
+
+Have a question, idea, or want to collaborate? Reach out on LinkedIn:
+
+- [**Kishan J. on LinkedIn**](https://www.linkedin.com/in/kshnkmrjha/)
+
 ## License
 
 [MIT](LICENSE) © 2026 Kishan J.
