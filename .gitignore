@@ -17,6 +17,10 @@ env/
 # Dev scratch notes
 txt.txt
 
+# Local streamlit run logs (dev)
+streamlit_err.log
+streamlit_out.log
+
 # OS
 .DS_Store
 Thumbs.db

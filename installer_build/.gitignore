@@ -1,0 +1,14 @@
+# Installer build outputs (publish installer as a GitHub Release, not in git)
+dist/
+dist_runtime/
+output/
+__pycache__/
+*.log
+build_launcher_log.txt
+
+# Legacy / superseded build scripts (kept on disk only)
+build_optimized.bat
+build_log*.txt
+stage_bundle.ps1
+slim_dist.ps1
+analyze_dlls.py

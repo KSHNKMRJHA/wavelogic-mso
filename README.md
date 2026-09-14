@@ -38,6 +38,17 @@ base, with a clear warning, **instead of the analysis simply failing.**
 
 ## Getting started
 
+You can run WaveLogic MSO in three ways — pick whichever suits you.
+
+### Option 1 — Live web app (no install)
+
+[![Streamlit App](https://img.shields.io/badge/Try-it_live-ff4b4b?style=for-the-badge&logo=streamlit&logoColor=white)](https://wavelogic.streamlit.app/)
+
+Open **https://wavelogic.streamlit.app** in your browser — no download, no
+account, no Python required.  Hosted on Streamlit Community Cloud.
+
+### Option 2 — From source (Windows, macOS, Linux)
+
 Requires **Python 3.10+**.
 
 ```bash
@@ -56,6 +67,22 @@ Open **http://localhost:8501** in your browser.
 
 > Keep the app pinned to loopback for privacy:
 > `streamlit run app.py --server.address 127.0.0.1`
+
+### Option 3 — Windows installer (no Python needed)
+
+A **standalone Windows installer** is published on the
+[Releases](https://github.com/KSHNKMRJHA/wavelogic-mso/releases) page.
+It bundles everything (Python 3.12, all dependencies, and the app) into a
+single `.exe` setup — **no Python installation required**.
+
+1. Download `WaveLogicMSO-Setup_v1.0.0.exe` from the latest Release.
+2. Run the installer.  The VC++ runtime is installed automatically.
+3. Launch **WaveLogic MSO** from the Start Menu (or desktop shortcut).
+4. A native welcome window opens; click **Launch** to start the server.
+5. Your default browser opens automatically to `http://localhost:8501`.
+
+If a previous session is already running on port 8501, it is closed
+automatically before the new one starts.
 
 ## Trying it with a sample
 
@@ -109,6 +136,27 @@ python -m py_compile analyzer_core.py app.py
 The core analysis lives in `analyzer_core.py` (UI-free, unit-testable); the UI
 lives in `app.py`; branding lives in `branding.py`; in-app docs live in
 `pages/`.
+
+### Building the Windows installer from source
+
+Requires **Windows 10/11 x64** and [Inno Setup 6](https://jrsoftware.org/isinfo.php).
+
+```powershell
+cd installer_build
+
+# 1. Build the small launcher exe (Nuitka, ~2 min)
+.\build_launcher.bat
+
+# 2. Bundle a portable Python 3.12 + all packages (~400 MB)
+powershell -ExecutionPolicy Bypass -File make_runtime_bundle.ps1
+
+# 3. Create the setup installer
+& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" installer.iss
+#    -> output\WaveLogicMSO-Setup_v1.0.0.exe
+```
+
+The installer bundles the whole app (no Python install needed by the end user)
+and is typically published as a GitHub Release asset.
 
 ## Credits
 
