@@ -8,53 +8,116 @@ install directory and opens the default browser.
 Only this file is compiled by Nuitka into WaveLogicMSO.exe; Streamlit and
 the data stack run interpreted from the bundled "python" folder.  This
 avoids the hard crashes (0x40000015) seen when compiling Streamlit itself.
+
+Debugging aids:
+  * Waves a ruler: logs always live in %%LOCALAPPDATA%%\\WaveLogicMSO\\wavelogic_launch.log
+    (and are mirrored into the app folder when that folder is really writable).
+  * Run the exe with --debug   (or env WAVELOGIC_DEBUG=1)   for verbose logs
+    and Streamlit's own debug logging.
+  * Run with --autolaunch       (or env WAVELOGIC_AUTOLAUNCH=1) to skip the
+    welcome window and start the server immediately (used for testing/dev).
 """
 import os
 import re
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
 from pathlib import Path
-import tkinter as tk
-
-from PIL import Image, ImageTk
 
 APP_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 APP_PORT = 8501
 CREATE_NO_WINDOW = 0x08000000
 BASE = "http://127.0.0.1:%d" % APP_PORT
 
+# The GUI imports are optional.  If Tk/PIL are missing or fail to load in a
+# particular install we still start the server and just log the reason.
+try:
+    import tkinter as tk
+except Exception:
+    tk = None
+try:
+    from PIL import Image
+    from PIL import ImageTk
+except Exception:
+    Image = None
+    ImageTk = None
 
-def _pick_log_dir() -> Path:
-    """Keep the simple log files in the app dir when writable, else LOCALAPPDATA."""
+
+def _log_dirs():
+    """Return (primary, secondary) log directories.
+
+    Primary is always %%LOCALAPPDATA%%\\WaveLogicMSO (guaranteed writable).
+    Secondary is the app folder, but only if a real probe write succeeds:
+    os.access() reports True for non-elevated admins against Program Files,
+    so we do not trust it and prove writability with an actual create.
+    """
+    primary = Path(os.environ.get("LOCALAPPDATA", ".")) / "WaveLogicMSO"
     try:
-        if os.access(str(APP_DIR), os.W_OK):
-            return APP_DIR
+        primary.mkdir(parents=True, exist_ok=True)
     except Exception:
-        pass
-    alt = Path(os.environ.get("LOCALAPPDATA", ".")) / "WaveLogicMSO"
+        primary = Path(tempfile.gettempdir()) / "WaveLogicMSO"
+        try:
+            primary.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+    secondary = None
     try:
-        alt.mkdir(parents=True, exist_ok=True)
-        return alt
+        probe = APP_DIR / ".probe_write"
+        probe.write_text("x", encoding="utf-8")
+        probe.unlink()
+        secondary = APP_DIR
     except Exception:
-        return APP_DIR
+        secondary = None
+    return primary, secondary
 
 
-LOG_DIR = _pick_log_dir()
-LOG_FILE = LOG_DIR / "wavelogic_launch.log"
-STREAMLIT_LOG = LOG_DIR / "wavelogic_streamlit.log"
+_LOG_PRIMARY, _LOG_SECONDARY = _log_dirs()
+LOG_FILE = _LOG_PRIMARY / "wavelogic_launch.log"
+STREAMLIT_LOG = _LOG_PRIMARY / "wavelogic_streamlit.log"
 
 
 def _log(msg: str) -> None:
+    line = "[%s] %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg)
+    for target in (_LOG_PRIMARY, _LOG_SECONDARY):
+        if target is None:
+            continue
+        try:
+            with open(target / "wavelogic_launch.log", "a", encoding="utf-8") as f:
+                f.write(line)
+        except Exception:
+            pass
+
+
+def _log_tail(path: Path, max_lines: int = 30) -> None:
+    """Mirror the tail of a secondary log into the primary launch log."""
     try:
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+        lines = path.read_text(
+            encoding="utf-8", errors="replace"
+        ).splitlines()[-max_lines:]
     except Exception:
-        pass
+        return
+    _log(f"--- {path.name} tail ---")
+    for line in lines:
+        _log("  | " + line)
+
+
+def _flag(name: str) -> bool:
+    if os.environ.get("WAVELOGIC_" + name.upper()):
+        return True
+    for a in sys.argv[1:]:
+        if a.lower().replace("-", "") == name.lower():
+            return True
+    return False
+
+
+AUTOLAUNCH = _flag("autolaunch")
+DEBUG = _flag("debug")
 
 BG = "#0b1220"
 PANEL = "#111a2e"
@@ -174,6 +237,9 @@ def _center(root: tk.Tk, w: int, h: int) -> None:
 def show_welcome() -> bool:
     """Show the native welcome window; True = proceed to start the app."""
     _log("welcome: enter")
+    if tk is None:
+        _log("welcome: tkinter unavailable, starting server without GUI")
+        return True
     try:
         return _show_welcome_impl()
     except Exception:
@@ -208,7 +274,7 @@ def _show_welcome_impl() -> bool:
 
     logo_path = APP_DIR / "wavelogic_logo.png"
     photo = None
-    if logo_path.exists():
+    if logo_path.exists() and Image is not None and ImageTk is not None:
         try:
             img = Image.open(logo_path)
             img.thumbnail((int(win_w * 0.82), int(win_h * 0.18)))
@@ -324,40 +390,47 @@ def _show_welcome_impl() -> bool:
 
 
 def main() -> int:
-    _log("main: started")
+    _log(f"main: WaveLogic MSO v{APP_VERSION} launcher started")
+    _log(f"main: exe dir    : {APP_DIR}")
+    _log(f"main: log file   : {LOG_FILE}")
+    _log(f"main: flags      : autolaunch={AUTOLAUNCH} debug={DEBUG}")
+    _log(f"main: python     : {sys.version.split()[0]}")
     os.chdir(APP_DIR)
     if str(APP_DIR) not in sys.path:
         sys.path.insert(0, str(APP_DIR))
 
-    if not show_welcome():
-        _log("main: user chose Exit")
-        return 0
-
-    free_port(APP_PORT)
-    _log(f"main: closing sessions on port {APP_PORT} done")
-
-    python_exe = APP_DIR / "python" / "python.exe"
-    if not python_exe.exists():
-        _log("main: bundled python.exe missing at " + str(python_exe))
-        return 1
-
-    app_path = str(APP_DIR / "app.py")
-    cmd = [
-        str(python_exe),
-        "-m", "streamlit", "run", app_path,
-        "--server.address=127.0.0.1",
-        "--server.headless=true",
-        "--server.showEmailPrompt=false",
-        "--browser.gatherUsageStats=false",
-        "--global.developmentMode=false",
-    ]
-
-    env = dict(os.environ)
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["PYTHONUTF8"] = "1"
-    env["PYTHONIOENCODING"] = "utf-8"
-
     try:
+        if not AUTOLAUNCH and not show_welcome():
+            _log("main: user chose Exit")
+            return 0
+
+        free_port(APP_PORT)
+        _log(f"main: port {APP_PORT} cleared")
+
+        python_exe = APP_DIR / "python" / "python.exe"
+        if not python_exe.exists():
+            _log("main: bundled python.exe MISSING at " + str(python_exe))
+            return 1
+
+        app_path = str(APP_DIR / "app.py")
+        cmd = [
+            str(python_exe),
+            "-m", "streamlit", "run", app_path,
+            "--server.address=127.0.0.1",
+            "--server.headless=true",
+            "--server.showEmailPrompt=false",
+            "--browser.gatherUsageStats=false",
+            "--global.developmentMode=false",
+        ]
+        if DEBUG:
+            cmd += ["--logger.level=debug"]
+        _log("main: cmd=" + " ".join(cmd))
+
+        env = dict(os.environ)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["PYTHONUTF8"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
+
         with open(STREAMLIT_LOG, "a", encoding="utf-8") as sl:
             _log("main: starting streamlit via bundled python")
             proc = subprocess.Popen(
@@ -372,13 +445,25 @@ def main() -> int:
             threading.Thread(
                 target=_wait_and_open_browser, daemon=True
             ).start()
+
+            # If the server dies almost immediately, dump its tail into the
+            # launch log so the failure is visible even if nobody watches it.
+            time.sleep(20)
+            if proc.poll() is not None:
+                _log(f"main: streamlit exited early with code {proc.returncode}")
+                _log_tail(STREAMLIT_LOG)
             rc = proc.wait()
         _log(f"main: streamlit exited with code {rc}")
+        if rc != 0:
+            _log_tail(STREAMLIT_LOG)
         return rc
     except Exception:
-        _log("main: exception starting streamlit\n" + traceback.format_exc())
+        _log("main: unhandled exception\n" + traceback.format_exc())
         return 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        pass

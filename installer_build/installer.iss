@@ -11,7 +11,7 @@
 #define MyAppName        "WaveLogic MSO"
 #endif
 #ifndef MyAppVersion
-#define MyAppVersion     "1.0.1"
+#define MyAppVersion     "1.0.2"
 #endif
 #ifndef MyAppPublisher
 #define MyAppPublisher   "Kishan J."
@@ -87,6 +87,7 @@ Source: "{#MyRedist}"; DestDir: "{tmp}"; Flags: deleteafterinstall
 [Icons]
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\{#MyAppName} (Debug console)"; Filename: "{app}\wavelogic-debug.bat"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 
 [Run]

@@ -15,6 +15,7 @@ if not exist "%VENV_PY%" set "VENV_PY=python"
 
 set APP_NAME=WaveLogicMSO
 set MAIN_FILE=launcher.py
+set LAUNCHER_VERSION=1.0.2
 
 set BUILD_JOBS=%NUMBER_OF_PROCESSORS%
 if not defined BUILD_JOBS set BUILD_JOBS=4
@@ -36,6 +37,11 @@ pushd "%SRC%"
 "%VENV_PY%" -m nuitka --standalone ^
     --mingw64 --assume-yes-for-downloads ^
     --windows-console-mode=disable ^
+    --company-name="Kishan J." ^
+    --product-name="WaveLogic MSO" ^
+    --product-version="%LAUNCHER_VERSION%" ^
+    --file-version="%LAUNCHER_VERSION%" ^
+    --file-description="WaveLogic MSO launcher %LAUNCHER_VERSION%" ^
     --windows-icon-from-ico=wavelogic_logo.ico ^
     --enable-plugin=tk-inter ^
     --jobs=%BUILD_JOBS% ^
