@@ -75,7 +75,7 @@ A **standalone Windows installer** is published on the
 It bundles everything (Python 3.12, all dependencies, and the app) into a
 single `.exe` setup — **no Python installation required**.
 
-1. Download `WaveLogicMSO-Setup_v1.0.0.exe` from the latest Release.
+1. Download `WaveLogicMSO-Setup_v1.0.1.exe` from the latest Release.
 2. Run the installer.  The VC++ runtime is installed automatically.
 3. Launch **WaveLogic MSO** from the Start Menu (or desktop shortcut).
 4. A native welcome window opens; click **Launch** to start the server.
@@ -152,7 +152,7 @@ powershell -ExecutionPolicy Bypass -File make_runtime_bundle.ps1
 
 # 3. Create the setup installer
 & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" installer.iss
-#    -> output\WaveLogicMSO-Setup_v1.0.0.exe
+#    -> output\WaveLogicMSO-Setup_v1.0.1.exe
 ```
 
 The installer bundles the whole app (no Python install needed by the end user)

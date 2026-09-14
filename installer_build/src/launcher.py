@@ -14,6 +14,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -22,11 +23,30 @@ import tkinter as tk
 from PIL import Image, ImageTk
 
 APP_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 APP_PORT = 8501
 CREATE_NO_WINDOW = 0x08000000
-LOG_FILE = APP_DIR / "wavelogic_launch.log"
-STREAMLIT_LOG = APP_DIR / "wavelogic_streamlit.log"
+BASE = "http://127.0.0.1:%d" % APP_PORT
+
+
+def _pick_log_dir() -> Path:
+    """Keep the simple log files in the app dir when writable, else LOCALAPPDATA."""
+    try:
+        if os.access(str(APP_DIR), os.W_OK):
+            return APP_DIR
+    except Exception:
+        pass
+    alt = Path(os.environ.get("LOCALAPPDATA", ".")) / "WaveLogicMSO"
+    try:
+        alt.mkdir(parents=True, exist_ok=True)
+        return alt
+    except Exception:
+        return APP_DIR
+
+
+LOG_DIR = _pick_log_dir()
+LOG_FILE = LOG_DIR / "wavelogic_launch.log"
+STREAMLIT_LOG = LOG_DIR / "wavelogic_streamlit.log"
 
 
 def _log(msg: str) -> None:
@@ -102,6 +122,44 @@ def free_port(port: int) -> bool:
         _kill_pids(pids)
         time.sleep(0.8)
     return _port_free(port)
+
+
+def _wait_and_open_browser(url: str = BASE, timeout_s: int = 60) -> None:
+    """Wait for the local server, then open the default browser ourselves.
+
+    Streamlit's own browser-launch is unreliable when the server runs as a
+    hidden child process, so the launcher opens the URL directly via
+    os.startfile once the port actually answers.
+    """
+    import urllib.request
+
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=3) as r:
+                if r.status == 200:
+                    break
+        except Exception:
+            time.sleep(0.5)
+    else:
+        _log("browser: server did not answer in %ss, giving up" % timeout_s)
+        return
+
+    _log("browser: server up, opening " + url)
+    try:
+        if os.name == "nt":
+            os.startfile(url)
+            _log("browser: os.startfile issued")
+            return
+    except Exception:
+        _log("browser: os.startfile failed, falling back to webbrowser\n"
+             + traceback.format_exc())
+    try:
+        import webbrowser
+        webbrowser.open(url)
+        _log("browser: webbrowser.open issued")
+    except Exception:
+        _log("browser: webbrowser.open failed\n" + traceback.format_exc())
 
 
 def _center(root: tk.Tk, w: int, h: int) -> None:
@@ -218,7 +276,7 @@ def _show_welcome_impl() -> bool:
 
     tk.Label(
         panel,
-        text=(f"On start the app opens at http://localhost:{APP_PORT} \u2014 any "
+        text=(f"On start the app opens at http://127.0.0.1:{APP_PORT} \u2014 any "
               f"existing session already running there is closed automatically."),
         bg=PANEL, fg=ACCENT, font=("Segoe UI", 10), anchor="w", justify="left",
         wraplength=wrap,
@@ -288,7 +346,7 @@ def main() -> int:
         str(python_exe),
         "-m", "streamlit", "run", app_path,
         "--server.address=127.0.0.1",
-        "--server.headless=false",
+        "--server.headless=true",
         "--server.showEmailPrompt=false",
         "--browser.gatherUsageStats=false",
         "--global.developmentMode=false",
@@ -311,6 +369,9 @@ def main() -> int:
                 creationflags=CREATE_NO_WINDOW,
             )
             _log(f"main: streamlit pid={proc.pid}")
+            threading.Thread(
+                target=_wait_and_open_browser, daemon=True
+            ).start()
             rc = proc.wait()
         _log(f"main: streamlit exited with code {rc}")
         return rc
