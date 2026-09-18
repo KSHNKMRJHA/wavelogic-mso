@@ -11,32 +11,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-# --- TEMPORARY DIAGNOSTIC (Streamlit Cloud import-resolution probe) ---
-# Must run BEFORE the named import below, which is the current failure point.
-# Reports which analyzer_core is actually resolved and whether it defines the
-# helper. Remove this block once the deployment path is confirmed.
-try:
-    import importlib as _diag_importlib
-    import os as _diag_os
-    import sys as _diag_sys
-
-    _diag_module = _diag_importlib.import_module("analyzer_core")
-    st.error(
-        "DIAGNOSTIC | analyzer_core.__file__={path} | "
-        "has_default_timestamp_mode={has} | sys.path[0]={sp0} | cwd={cwd}".format(
-            path=getattr(_diag_module, "__file__", "<no __file__>"),
-            has=hasattr(_diag_module, "default_timestamp_mode"),
-            sp0=(_diag_sys.path[0] if _diag_sys.path else "<empty>"),
-            cwd=_diag_os.getcwd(),
-        )
-    )
-except Exception as _diag_exc:  # pragma: no cover - diagnostic only
-    st.error(
-        "DIAGNOSTIC | analyzer_core probe failed: "
-        f"{type(_diag_exc).__name__}: {_diag_exc}"
-    )
-# --- END TEMPORARY DIAGNOSTIC ---
-
 from analyzer_core import (
     analyze_timestamp_quality,
     bits_to_hex,
@@ -61,6 +35,17 @@ from analyzer_core import (
 )
 
 from branding import get_build_label, page_setup, render_brand_footer
+from debug_utils import (
+    clear_debug_logs,
+    collect_runtime_diagnostics,
+    debug_log,
+    export_debug_log,
+    export_diagnostics_json,
+    get_debug_logs,
+    get_last_exception,
+    record_app_state,
+    record_exception,
+)
 
 
 st.set_page_config(
@@ -771,6 +756,9 @@ def render_decoder(
         ),
     )
 
+    debug_log(f"Protocol selected: {protocol} (time axis: {time_axis_note})")
+    record_app_state(protocol=protocol, decoder_time_axis=time_axis_note)
+
     missing = [name for name in signals if not np.all(np.isfinite(signals[name]))]
     if missing:
         st.warning(
@@ -853,6 +841,7 @@ def render_decoder(
             if source is None:
                 return files
             voltage = np.asarray(signals[source], dtype=float)
+            record_app_state(decoder_source=source)
 
             with st.expander("Legacy decoder configuration", expanded=True):
                 col1, col2, col3 = st.columns(3)
@@ -930,6 +919,16 @@ def render_decoder(
                 )
                 paired_voltage = np.asarray(signals[paired_source], dtype=float)
 
+                debug_log(
+                    f"Multi-message scan start: source={source} paired={paired_source} "
+                    f"bit_time_us={nominal_bit_us} preamble={int(preamble_count)}"
+                )
+                record_app_state(
+                    decoder_source=source,
+                    decoder_paired_channel=paired_source,
+                    multi_message=True,
+                )
+
                 scan_result = scan_differential_manchester_cached(
                     decode_time,
                     voltage,
@@ -943,6 +942,15 @@ def render_decoder(
                 messages = scan_result.get("messages", [])
                 message_count = int(scan_result.get("message_count", len(messages)))
                 scan_metrics = scan_result.get("metrics", {})
+
+                debug_log(
+                    f"Multi-message scan end: status={scan_result.get('status')} "
+                    f"messages={message_count} decoder_calls={scan_metrics.get('decoder_calls')}"
+                )
+                record_app_state(
+                    multi_message_status=scan_result.get("status"),
+                    multi_message_count=message_count,
+                )
 
                 st.markdown("#### Differential Manchester messages")
                 st.metric("Validated messages", message_count)
@@ -1294,6 +1302,8 @@ def render_decoder(
             )
 
     except (ValueError, ArithmeticError, np.linalg.LinAlgError) as exc:
+        debug_log(f"Decoder exception: {type(exc).__name__}: {exc}", "ERROR")
+        record_exception(exc)
         st.error(f"Decoder could not analyze this window: {exc}")
         return files
 
@@ -1304,9 +1314,193 @@ def render_decoder(
     return files
 
 
+# DEBUG & LOGS
+# ============================================================
+def _diagnostics_frame(rows: list[tuple[str, object]]) -> pd.DataFrame:
+    """Build an Arrow-safe two-column table (values rendered as text)."""
+    return pd.DataFrame(
+        [(str(field), str(value)) for field, value in rows],
+        columns=["Field", "Value"],
+    )
+
+
+def render_debug_section() -> None:
+    """Bottom-of-page, opt-in Debug & Logs view.
+
+    Observational only: never modifies application state or behaviour. Shown
+    last so it can also expose diagnostics when earlier processing raised.
+    """
+    st.divider()
+    st.subheader("Debug & Logs")
+
+    enabled = st.toggle(
+        "Enable debug & diagnostic logs",
+        value=False,
+        key="wavelogic_debug_enabled",
+        help="Show technical runtime information and recent application logs.",
+    )
+
+    if not enabled:
+        return
+
+    st.caption(
+        "Technical diagnostics for troubleshooting. Never shows secrets, "
+        "credentials, environment variables, or uploaded file contents."
+    )
+
+    try:
+        diagnostics = collect_runtime_diagnostics()
+    except Exception as exc:  # pragma: no cover - defensive
+        debug_log(f"Diagnostics collection failed: {type(exc).__name__}: {exc}", "ERROR")
+        diagnostics = {"error": f"{type(exc).__name__}: {exc}"}
+
+    application = diagnostics.get("application", {}) or {}
+    runtime = diagnostics.get("runtime", {}) or {}
+    core = diagnostics.get("analyzer_core", {}) or {}
+
+    st.markdown("**Application**")
+    st.dataframe(
+        _diagnostics_frame([
+            ("Build label", application.get("build_label", "Unavailable")),
+            ("App file", application.get("app_file", "Unavailable")),
+            ("Python", application.get("python_version", "Unavailable")),
+            ("Streamlit", application.get("streamlit_version", "Unavailable")),
+        ]),
+        width="stretch",
+        hide_index=True,
+    )
+
+    st.markdown("**Runtime**")
+    st.dataframe(
+        _diagnostics_frame([
+            ("Working directory", runtime.get("cwd", "Unavailable")),
+            ("Executable", runtime.get("executable", "Unavailable")),
+            ("Platform", runtime.get("platform", "Unavailable")),
+            ("Machine", runtime.get("machine", "Unavailable")),
+            ("Process id", runtime.get("pid", "Unavailable")),
+        ]),
+        width="stretch",
+        hide_index=True,
+    )
+
+    sys_path = runtime.get("sys_path") or []
+    with st.expander("sys.path", expanded=False):
+        st.code("\n".join(str(item) for item in sys_path) or "Unavailable", language="text")
+
+    st.markdown("**analyzer_core import diagnostics**")
+    st.dataframe(
+        _diagnostics_frame([
+            ("Module", core.get("module", "Unavailable")),
+            ("File", core.get("file", "Unavailable")),
+            ("SHA-256 (first 12)", core.get("sha256_12", "Unavailable")),
+            ("Size (bytes)", core.get("size_bytes", "Unavailable")),
+            (
+                "has default_timestamp_mode",
+                core.get("has_default_timestamp_mode", "Unavailable"),
+            ),
+        ]),
+        width="stretch",
+        hide_index=True,
+    )
+
+    st.markdown("**Imported API verification**")
+    symbols = diagnostics.get("imported_symbols") or []
+    if symbols:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {"Symbol": item.get("symbol", ""), "Available": item.get("available", False)}
+                    for item in symbols
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+    else:
+        st.info("Symbol list unavailable.")
+
+    exact = diagnostics.get("exact_named_import")
+    if isinstance(exact, dict):
+        if exact.get("ok"):
+            st.success(f"Exact analyzer_core named import: OK ({exact.get('symbol_count')} symbols)")
+        else:
+            st.error(
+                "Exact analyzer_core named import: FAILED — "
+                f"{exact.get('exception_type')}: {exact.get('exception_message')}"
+            )
+            if exact.get("traceback"):
+                st.code(exact["traceback"], language="text")
+    elif exact:
+        st.write(exact)
+
+    st.markdown("**Application state**")
+    state = diagnostics.get("app_state") or {}
+    if state:
+        st.dataframe(
+            _diagnostics_frame([(str(k), v) for k, v in state.items()]),
+            width="stretch",
+            hide_index=True,
+        )
+    else:
+        st.caption("No application state captured this run.")
+
+    last_error = get_last_exception()
+    if last_error:
+        st.markdown("**Last exception**")
+        st.dataframe(
+            _diagnostics_frame([
+                ("Time", last_error.get("timestamp", "Unavailable")),
+                ("Type", last_error.get("type", "Unavailable")),
+                ("Message", last_error.get("message", "Unavailable")),
+            ]),
+            width="stretch",
+            hide_index=True,
+        )
+        with st.expander("Traceback", expanded=False):
+            st.code(last_error.get("traceback", "Unavailable"), language="text")
+
+    st.markdown("**Recent log records**")
+    records = get_debug_logs()
+    if records:
+        st.dataframe(
+            pd.DataFrame(records)[["timestamp", "level", "message"]],
+            width="stretch",
+            hide_index=True,
+        )
+    else:
+        st.caption("No log records yet.")
+
+    download_a, download_b, download_c = st.columns(3)
+    download_a.download_button(
+        "Download debug log",
+        data=export_debug_log(records).encode("utf-8"),
+        file_name="wavelogic_debug_log.txt",
+        mime="text/plain",
+    )
+    download_b.download_button(
+        "Download diagnostics",
+        data=export_diagnostics_json(diagnostics).encode("utf-8"),
+        file_name="wavelogic_diagnostics.json",
+        mime="application/json",
+    )
+    download_c.button(
+        "Clear debug log",
+        key="wavelogic_clear_debug_log",
+        on_click=clear_debug_logs,
+    )
+
+
 # MAIN APPLICATION
 # ============================================================
 def main() -> None:
+    try:
+        _run_app()
+    finally:
+        render_debug_section()
+
+
+def _run_app() -> None:
+    debug_log("Application run started")
     inject_mso_theme()
     render_header()
 
@@ -1370,9 +1564,18 @@ def main() -> None:
             int(skiprows),
         )
     except (ValueError, pd.errors.ParserError, UnicodeError) as exc:
+        debug_log(f"CSV import failed: {type(exc).__name__}: {exc}", "ERROR")
+        record_exception(exc)
         st.error(f"CSV import failed: {exc}")
         st.info("Check the delimiter, metadata row count, and UTF-8 encoding.")
         return
+
+    debug_log(f"CSV loaded: {uploaded.name} rows={len(raw_df)} columns={list(raw_df.columns)}")
+    record_app_state(
+        file_name=uploaded.name,
+        file_rows=len(raw_df),
+        file_columns=", ".join(str(column) for column in raw_df.columns),
+    )
 
     with st.sidebar:
         detected_time = find_time_column(list(raw_df.columns))
@@ -1439,8 +1642,22 @@ def main() -> None:
             timestamp_mode,
         )
     except ValueError as exc:
+        debug_log(f"Timestamp preparation failed: {type(exc).__name__}: {exc}", "ERROR")
+        record_exception(exc)
         st.error(str(exc))
         return
+
+    debug_log(
+        f"Timestamp analysis: mode={quality['applied_mode']} "
+        f"duplicates={input_quality['duplicate_ratio']:.3f} "
+        f"backward_steps={input_quality['non_monotonic_steps']}"
+    )
+    record_app_state(
+        time_column=time_column,
+        time_unit=time_unit,
+        timestamp_mode=quality["applied_mode"],
+        timestamp_reconstruction=quality["reconstruction_applied"],
+    )
 
     if time_s[-1] <= time_s[0]:
         st.error("Capture duration must be positive.")
@@ -1813,6 +2030,8 @@ def main() -> None:
             quality,
         )
     )
+
+    debug_log(f"Export artifacts generated: {len(files)} file(s)")
 
     base_name = Path(uploaded.name).stem
 
