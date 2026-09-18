@@ -1,11 +1,64 @@
 # Release Notes
 
-## Differential Manchester multi-message analysis
+## Explicit Differential Manchester analysis modes and burst-scan UX
 
 ### Added
 
-- Optional multi-message Differential Manchester scanning, enabled with
-  **Detect multiple messages (multi-burst scan)** (opt-in; disabled by default).
+- Explicit **Analysis mode** selector for Differential Manchester with two
+  modes: **Multi-message / Burst Scan** (default) and **Single Frame**.
+- **Multi-message / Burst Scan** scans the selected capture/window for
+  independently validated messages — the user does not have to crop to a single
+  frame first.
+- **Channel A / Channel B** selection, with a convenience suggestion for a
+  likely active differential pair (for example `CH3` / `CH4` when those channels
+  are clearly the most active). The suggestion is only a hint and never
+  overrides a manual choice.
+- Burst-scan result presentation: validated-message count, a compact per-message
+  summary, a message selector, and the per-message detail view.
+- Actionable long-window guidance: when the single-frame decoder rejects an
+  oversized window it reports the sample count, window duration and configured
+  bit time, and recommends narrowing the window or switching to
+  Multi-message / Burst Scan — data is never silently cropped.
+- Clearer empty-result diagnostics: scanner status, candidate regions, decoder
+  calls, decoder-call-budget flag, selected channels, bit time and window
+  duration.
+
+### Changed
+
+- The legacy decoder now runs only in **Single Frame** mode. The
+  multi-message workflow calls the existing paired-channel scanner and never
+  applies the legacy decoder to a whole capture.
+- The Differential Manchester panel is reorganised into explicit sections
+  (Analysis mode · Channels · Timing configuration · Result), replacing the old
+  "Detect multiple messages" checkbox.
+- Documentation and in-app help refreshed to match the current workflow.
+
+### Compatibility
+
+- Scanner acceptance criteria, timing tolerance, sparse-transition rejection,
+  boundary coverage, duplicate clustering and the decoder-call budget are
+  unchanged.
+- `decode_waveform()` and `analyzer_core.py` are unchanged.
+- Unrelated protocol paths (UART/RS-232, SPI, I2C, Manchester, NRZ, PWM) are
+  unchanged.
+
+### Notes
+
+- `~12.8 µs` remains an empirical default bit-time value used for the current
+  workflow; it is not a universal Differential Manchester protocol constant.
+
+## Differential Manchester multi-message analysis
+
+> **Superseded UI:** the multi-message scanner below is now selected through the
+> explicit **Analysis mode → Multi-message / Burst Scan** control described
+> above, rather than the older "Detect multiple messages (multi-burst scan)"
+> checkbox. The scanner behaviour and acceptance model are unchanged.
+
+### Added
+
+- Differential Manchester multi-message scanning (originally introduced as the
+  opt-in "Detect multiple messages" checkbox; now selected through
+  **Analysis mode → Multi-message / Burst Scan**).
 - Validated message aggregation with a message count and per-message summary.
 - **Message N** selection with a per-message detail view.
 - Logical frame start/end offsets for each validated message, distinct from the
@@ -30,15 +83,17 @@
 
 ### Compatibility
 
-- Existing single-message Differential Manchester path preserved and remains the
-  default.
+- The existing single-frame Differential Manchester path is preserved (now
+  selected via **Analysis mode → Single Frame**). **Multi-message / Burst
+  Scan** is the default analysis mode as of the analysis-modes update above.
 - `decode_waveform()` unchanged.
 - Unrelated protocol paths (UART/RS-232, SPI, I2C, Manchester, NRZ, PWM)
   unchanged.
 
 ### Notes
 
-- Multi-message mode is intentionally conservative and opt-in.
+- Multi-message analysis is intentionally conservative; it is now the default
+  Differential Manchester analysis mode.
 - Acceptance thresholds are engineering safety heuristics, not formal protocol
   specifications; `~12.8 µs` is an empirical timing prior, not a universal
   protocol constant.

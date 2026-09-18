@@ -30,10 +30,15 @@ base, with a clear warning, **instead of the analysis simply failing.**
 - **Signal math** — differential (A - B) and inverted channels, plus per-window
   readouts: edge frequency, duty cycle, logic levels, transition counts.
 - **Protocol decoders** — UART / RS-232, SPI (4-wire), I2C (7-bit), Manchester,
-  Differential Manchester (legacy), NRZ, and PWM — each with configuration
-  options, status chips, metrics, exportable tables, and a plain-text transcript.
-- **Robustness** — Schmitt-style hysteresis logic extraction, automatic
-  decimation for large files, full-resolution exports.
+  Differential Manchester, NRZ, and PWM — each with configuration options,
+  status chips, metrics, exportable tables, and a plain-text transcript.
+- **Differential Manchester analysis modes** — **Multi-message / Burst Scan**
+  finds and independently validates every message in a long capture, while
+  **Single Frame** runs the legacy decoder on one frame.
+- **Robustness** — Schmitt-style hysteresis logic extraction, automatic display
+  decimation for large files, full-resolution decoding and exports.
+- **Debug & Logs** — an opt-in, bottom-of-page panel with runtime and import
+  diagnostics, a bounded recent-log buffer, and log/diagnostics downloads.
 - **Local-first** — everything runs on your machine; no account, no cloud.
 
 ## Getting started
@@ -97,7 +102,7 @@ RS-232** → source = `TX` → baud 9600 → see the decoded bytes.
 | [docs/GUIDE.md](docs/GUIDE.md) | Step-by-step tutorial (view, math, decode, export) |
 | [docs/FEATURES.md](docs/FEATURES.md) | Full feature list |
 | [docs/CREDITS.md](docs/CREDITS.md) | Credits and license |
-| [RELEASE_NOTES.md](RELEASE_NOTES.md) | Multi-message Differential Manchester release notes |
+| [RELEASE_NOTES.md](RELEASE_NOTES.md) | Release notes (Differential Manchester analysis modes, multi-message scanning) |
 | In-app pages | Introduction, User Guide, Features, Credits (sidebar) |
 
 ## CSV format
@@ -124,30 +129,65 @@ Time(s),CH1,CH2
 | SPI (4-wire) | CPOL/CPHA, active CS, bits/word, MSB-first, CS-gap merge | frames: MOSI/MISO words per frame |
 | I2C (7-bit) | SCL + SDA | transcript: START, address+R/W, ACK/NACK, data, STOP |
 | Manchester | bit alignment | bits + hex words |
-| Differential Manchester (legacy) | alignment | bits hex groups |
+| Differential Manchester | analysis mode (Multi-message / Burst Scan or Single Frame), Channel A/B, nominal bit time, preamble count, clock alignment, transition hold-off | validated messages count, per-message summary, decoded bits + hex per message (Single Frame: bits + hex groups) |
 | NRZ | phase, bits/word, MSB-first | bits + hex words |
 | PWM | per-pulse | period & duty per pulse |
 
-## Differential Manchester: multi-message analysis
+## Differential Manchester
 
-The legacy Differential Manchester decoder analyzes one frame per selected
-window. An optional, conservative multi-message scanner can locate and present
-several independently validated bursts in the same capture.
+Differential Manchester analysis offers two explicit **Analysis mode** options:
 
-Enable **Detect multiple messages (multi-burst scan)** when analyzing captures
-that may contain multiple Differential Manchester bursts. Multi-message mode is
-opt-in so the established single-message presentation stays the default.
+| Analysis mode | When to use | What it does |
+| --- | --- | --- |
+| **Multi-message / Burst Scan** *(default)* | Captures that may contain one or more messages | Scans the selected capture/window with the paired-channel scanner and presents each independently validated message |
+| **Single Frame** | A window you have deliberately cropped to one frame | Runs the legacy single-frame decoder on Channel A |
 
-Multi-message mode provides:
+Multi-message / Burst Scan does **not** require you to crop the capture to a
+single frame first, and the legacy decoder is never applied to an entire
+capture in that mode.
 
-- a validated-message count and a compact per-message summary table
-- **Message N** selection with a per-message detail view
-- logical frame start/end offsets (distinct from the decoder window and pre-roll)
-- per-message waveform detail cropped to the logical frame boundaries
-- CSV exports: `dm_messages_summary.csv` and `dm_messages_bits.csv`
+### Channels
 
-With multi-message mode disabled, the existing single-message decoder, threshold
-controls, plotting, and exports behave exactly as before.
+Analysis uses two waveform channels, **Channel A** and **Channel B**. Select the
+two electrical channels carrying the differential pair. The UI suggests a likely
+pair based on which channels are most active in the current window (for example
+`CH3` / `CH4`); the suggestion is only a convenience and never overrides a manual
+selection. Common captures often use `CH3` / `CH4`, but that is an example, not a
+requirement.
+
+### Timing configuration
+
+**Nominal bit time** is expressed in microseconds (µs) and defaults to
+`12.8 µs`; adjust it when a capture uses different timing. `12.8 µs` is an
+**empirical default** for the current workflow, not a universal Differential
+Manchester protocol specification. Other controls: preamble bit count, clock
+alignment, and transition hold-off.
+
+### Results
+
+Multi-message / Burst Scan reports:
+
+- the number of independently validated messages
+- a compact per-message summary table (message, start/end, duration, decoded
+  bits, packet bits, fitted bit time, preamble/sync/clock status, structural
+  coverage)
+- a message selector with a per-message detail view (status chips, metrics,
+  decoded bits, packet bytes, pulse timing, frame summary, waveform figure, text
+  summary)
+- scan diagnostics when nothing is validated
+
+Only independently validated messages are presented as detected messages. Not
+every region of electrical activity becomes a decoded message. Successful scans
+also export `dm_messages_summary.csv` and `dm_messages_bits.csv`.
+
+### Long-window guidance
+
+If **Single Frame** reports that the selected window spans too many half-bit
+cells, the window is too large for the single-frame decoder. This is intentional
+protection and the data is never silently cropped. Either:
+
+1. narrow the **Window** controls to one frame, or
+2. switch **Analysis mode** to **Multi-message / Burst Scan**.
 
 ### Acceptance model (conservative by design)
 
@@ -213,6 +253,39 @@ CSV
 The existing decoder remains the authoritative bitstream decoder; the
 orchestration layer only decides whether a candidate has sufficient independent
 waveform evidence to be presented as a validated message.
+
+## Troubleshooting
+
+| Symptom | What to do |
+| --- | --- |
+| `CSV import failed` | Check the delimiter, "Metadata rows before header", and that the file is UTF-8. |
+| "required channel missing" | Tick the channel under **Show simultaneously** in the sidebar. |
+| Warning: timestamps "not strictly increasing" | Expected for duplicated/quantized timestamps — a uniform time axis is reconstructed for display and decoding. |
+| Single Frame: "the selected window spans too many half-bit cells" | The window is too large for the single-frame decoder. Narrow the **Window** controls to one frame, or switch **Analysis mode** to **Multi-message / Burst Scan**. |
+| Burst Scan: "No independently validated Differential Manchester messages were found" | Check the channel pair (Channel A / Channel B), the nominal bit time, and the selected capture window. The scanner only reports independently validated messages. |
+| Burst Scan: budget warning | The decoder-call budget was reached; messages already validated remain valid, but the scan may be incomplete. Narrow the window or refine the channel pair. |
+| Slow chart on huge files | Display decimation is automatic; decoding and exports use full resolution. |
+
+## Debug & Logs
+
+At the bottom of the page there is an opt-in **Debug & Logs** section, disabled
+by default. When enabled it shows:
+
+- application information (build label, Python and Streamlit versions)
+- runtime information (working directory, `sys.path`, platform, process id)
+- `analyzer_core` import diagnostics (resolved file, size, hash, and whether the
+  expected helper is present)
+- imported API verification for every symbol the app imports from
+  `analyzer_core`
+- a safe result for the exact `analyzer_core` named import
+- current application state (file/window/protocol/mode)
+- the most recent exception, when one occurred
+- the most recent bounded application log records (timestamp, level, message)
+
+It also provides **Download debug log** (text), **Download diagnostics** (JSON)
+and **Clear debug log**. Diagnostics are observational only: no secrets,
+credentials, environment variables, or uploaded waveform contents are shown or
+included in the downloads.
 
 ## Development
 

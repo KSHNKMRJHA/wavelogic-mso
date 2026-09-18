@@ -24,9 +24,27 @@ Everything in this list ships in the app. There is no paid tier.
 | SPI (4-wire) | CPOL/CPHA, active CS, bits/word, MSB-first, CS-gap merge |
 | I2C (7-bit) | full transcript: START, address+R/W, ACK/NACK per byte, STOP; end-of-stream robust |
 | Manchester (Biphase-L) | standard bit alignment with midpoint-transition handling |
-| Differential Manchester (legacy) | original project convention; metaview 16-bit aligned |
+| Differential Manchester | explicit **Analysis mode**: Multi-message / Burst Scan or Single Frame; Channel A/B, nominal bit time, preamble count, clock alignment, transition hold-off |
 | NRZ (clocked) | phase alignment, bits/word, MSB-first, robust clock fit |
 | PWM | per-pulse period and duty measured from the waveform |
+
+## Differential Manchester analysis modes
+
+- **Multi-message / Burst Scan** *(default)* — scans the selected capture/window
+  with the paired-channel scanner and presents each independently validated
+  message (count, per-message summary, message selector, per-message detail and
+  message-level CSV exports).
+- **Single Frame** — runs the legacy single-frame decoder on Channel A, with
+  automatic/manual thresholds; appropriate for a window deliberately cropped to
+  one frame.
+- **Channel A / Channel B** selection with a convenience suggestion for a likely
+  active differential pair (a hint only, never a guaranteed protocol
+  identification).
+- **Long-window guidance** — if the single-frame decoder rejects an oversized
+  window, the app reports samples/duration/bit time and recommends narrowing the
+  window or switching to Multi-message / Burst Scan; data is never silently
+  cropped.
+- Only independently validated messages are reported as detected messages.
 
 ## Robustness & quality
 
@@ -38,6 +56,19 @@ Everything in this list ships in the app. There is no paid tier.
   tiles (baud, frames, NACK count, duty, ...).
 - **Plain-text decode log** — human-readable transcript for bug reports.
 - **Local-first** — no cloud submission of your capture data.
+
+## Diagnostics
+
+- **Debug & Logs** — an opt-in panel at the bottom of the page, disabled by
+  default. When enabled it shows application information (build label, Python
+  and Streamlit versions), runtime information (working directory, `sys.path`,
+  platform, process id), `analyzer_core` import diagnostics, imported-API
+  verification, the current application state, the most recent exception, and a
+  bounded buffer of recent log records.
+- **Downloads** — **Download debug log** (text), **Download diagnostics**
+  (JSON), and **Clear debug log**.
+- **Safe by design** — no secrets, credentials, environment variables, or
+  uploaded waveform contents are displayed or downloaded.
 
 ## In-app documentation
 

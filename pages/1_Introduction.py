@@ -45,10 +45,20 @@ capture, view any combination of channels on a shared time axis, zoom and cursor
 through it, compare signals, and decode the protocols hidden in the waveforms —
 without a vendor tool, a license key, or the cloud.
 
+It imports oscilloscope CSV captures, analyses the digital/electrical waveforms,
+and decodes them with a suite of protocol decoders. Long captures that contain
+several Differential Manchester messages can be analysed with **Multi-message /
+Burst Scan**, which finds and independently validates each message instead of
+requiring you to crop to a single frame.
+
 It was born from a simple frustration: a CSV from a logic analyzer or scope that
 "could not be decoded because the timestamps were not strictly increasing".
 So the decoder was built to reconstruct a proper time base from any capture,
 monotonic or not, and ship an entire protocol suite with it — as open source.
+
+When something looks wrong, the opt-in **Debug & Logs** panel at the bottom of
+the page shows runtime and import diagnostics, recent application logs, and
+downloadable diagnostics — without exposing your capture data or any secrets.
 """)
 
 st.subheader("What it gives you")
@@ -69,10 +79,19 @@ with col2:
 with col3:
     st.markdown(
         "**Protocol decoders**\n\n"
-        "Differential Manchester (legacy), Manchester, UART, SPI, I2C, NRZ and "
-        "PWM — each with configurable options, status chips, metrics, tables, "
-        "and a plain-text decode log."
+        "Differential Manchester (with **Multi-message / Burst Scan** and "
+        "**Single Frame** modes), Manchester, UART, SPI, I2C, NRZ and PWM — each "
+        "with configurable options, status chips, metrics, tables, and a "
+        "plain-text decode log."
     )
+
+st.markdown("---")
+st.markdown(
+    "**Diagnostics** — an opt-in **Debug & Logs** panel at the bottom of the "
+    "page reports runtime and import information, a bounded recent-log buffer, "
+    "and downloadable log/diagnostics files. It is off by default and does not "
+    "expose secrets or waveform contents."
+)
 
 st.markdown("---")
 st.markdown("### Project quick links")

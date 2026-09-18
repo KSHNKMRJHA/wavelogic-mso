@@ -39,7 +39,7 @@ decoders = [
     ("SPI (4-wire)", "CPOL/CPHA, active chip-select level, bits per word, MSB-first option, CS-gap merging."),
     ("I2C (7-bit)", "Full transaction transcript: START, address + R/W, ACK/NACK per byte, STOP; end-of-stream robust."),
     ("Manchester (Biphase-L)", "Standard bit alignment with midpoint transition handling."),
-    ("Differential Manchester (legacy)", "Original project convention; midpoint transition means 0; 16-bit boundaries aligned."),
+    ("Differential Manchester", "Explicit Analysis mode: Multi-message / Burst Scan (validated messages across a capture) or Single Frame (legacy decoder on one frame). Channels A/B, nominal bit time, preamble, alignment and hold-off."),
     ("NRZ (clocked)", "Phase alignment, bits per word, MSB-first, robust clock fitting."),
     ("PWM", "Per-pulse period and duty measured directly from the waveform, with stable clock domain checks."),
 ]
@@ -53,10 +53,16 @@ robust = [
     ("Local-first", "Everything runs in your browser locally; no cloud submission of your capture data."),
 ]
 
+diagnostics = [
+    ("Debug & Logs", "Opt-in panel at the bottom of the page; disabled by default. Shows application/runtime information, analyzer_core import diagnostics and imported-API verification, current application state, the most recent exception, and bounded recent log records."),
+    ("Runs locally", "Everything runs in your browser locally; no cloud submission of your capture data."),
+]
+
 for title, rows in (
     ("Scope & measurement", scope),
     ("Protocol decoders", decoders),
     ("Robustness & quality", robust),
+    ("Diagnostics", diagnostics),
 ):
     st.subheader(title)
     for name, text in rows:
