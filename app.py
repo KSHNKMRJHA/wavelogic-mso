@@ -30,6 +30,7 @@ from analyzer_core import (
     find_time_column,
     group_bits,
     prepare_time_axis,
+    scan_differential_manchester,
 )
 
 from branding import page_setup, render_brand_footer
@@ -421,6 +422,231 @@ def build_zip(files: dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
+@st.cache_data(show_spinner=False, max_entries=4)
+def scan_differential_manchester_cached(
+    time_s: np.ndarray,
+    channel_a: np.ndarray,
+    channel_b: np.ndarray,
+    nominal_bit_us: float,
+    alignment: str,
+    preamble_count: int,
+    holdoff_us: float,
+) -> dict:
+    """Run the multi-message scan once; selection then reuses cached output."""
+    return scan_differential_manchester(
+        time_s,
+        channel_a,
+        channel_b,
+        nominal_bit_us,
+        alignment,
+        preamble_count,
+        holdoff_us,
+    )
+
+
+# ============================================================
+# MULTI-MESSAGE DIFFERENTIAL MANCHESTER PRESENTATION
+# ============================================================
+DIFFERENTIAL_THRESHOLD_NOTE = (
+    "Threshold lines in this figure are a reference visualization. The scanner "
+    "estimates logic thresholds per burst, so the plotted levels are not "
+    "necessarily the exact thresholds used for candidate validation."
+)
+
+DIFFERENTIAL_BUDGET_NOTE = (
+    "Scan stopped at the decoder-call safety limit. Messages shown were "
+    "independently validated before the limit was reached; additional messages "
+    "may exist."
+)
+
+
+def differential_budget_notice(scan_metrics: dict) -> str | None:
+    """Return the incompleteness notice when the scan hit the call budget."""
+    if (scan_metrics or {}).get("decoder_call_budget_hit"):
+        return DIFFERENTIAL_BUDGET_NOTE
+    return None
+
+
+def differential_message_summary(
+    messages: list[dict],
+    window_start_from_capture_us: float | None = None,
+) -> pd.DataFrame:
+    """Compact per-message summary built from the existing scanner result.
+
+    ``Start_us``/``End_us`` are relative to the selected window start, matching
+    the existing legacy frame-summary convention. When the window start offset
+    is supplied, capture-relative columns are added so the exported artifact is
+    unambiguous.
+    """
+    rows: list[dict] = []
+    for index, message in enumerate(messages, start=1):
+        start_us = float(message.get("frame_start_us", np.nan))
+        end_us = float(message.get("frame_end_us", np.nan))
+        structural = message.get("structural_validation") or {}
+        row = {
+            "Message": index,
+            "Start_us": start_us,
+            "End_us": end_us,
+            "Duration_us": end_us - start_us,
+            "DecodedBits": len(message.get("bits", [])),
+            "PacketBits": len(message.get("packet_data_bits", [])),
+            "Preamble": "PASS" if message.get("preamble_valid") else "FAIL",
+            "Sync": "PASS" if message.get("sync_valid") else "FAIL",
+            "Clock": "PASS" if message.get("clock_quality_pass") else "FAIL",
+            "FittedBit_us": float(message.get("fitted_bit_us", np.nan)),
+            "StructuralCoverage": float(
+                structural.get("boundary_transition_coverage", np.nan)
+            ),
+            "LogicalStartSample": int(message.get("logical_frame_start_sample", -1)),
+            "LogicalEndSample": int(message.get("logical_frame_end_sample", -1)),
+        }
+        if window_start_from_capture_us is not None:
+            row["WindowStartFromCapture_us"] = window_start_from_capture_us
+            row["StartFromCapture_us"] = window_start_from_capture_us + start_us
+            row["EndFromCapture_us"] = window_start_from_capture_us + end_us
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def differential_message_bits(messages: list[dict]) -> pd.DataFrame:
+    """Decoded bitstream per message, for export without re-decoding."""
+    rows = [
+        {
+            "Message": index,
+            "DecodedBits": bits_to_string(message.get("bits", np.array([], dtype=int))),
+        }
+        for index, message in enumerate(messages, start=1)
+    ]
+    return pd.DataFrame(rows)
+
+
+def differential_message_result(
+    message: dict,
+    signal_name: str,
+    timestamp_quality: dict,
+    time_axis_note: str,
+    low_threshold: float,
+    high_threshold: float,
+    holdoff_us: float,
+    index: int,
+    total: int,
+    window_start_from_capture_us: float,
+) -> dict:
+    """Shape one scanner message into the existing render_result contract."""
+    frame_start_us = float(message.get("frame_start_us", np.nan))
+    frame_end_us = float(message.get("frame_end_us", np.nan))
+    summary = message["frame_summary"].copy()
+    summary["Source"] = signal_name
+    summary["Convention"] = "Legacy: midpoint transition = 0"
+    summary["MessageIndex"] = index
+    summary["MessageCount"] = total
+    # Scan-relative times mirror the legacy frame-summary convention, while the
+    # capture-relative columns avoid implying a false time origin.
+    summary["LogicalFrameStart_us"] = frame_start_us
+    summary["LogicalFrameEnd_us"] = frame_end_us
+    summary["WindowStartFromCapture_us"] = window_start_from_capture_us
+    summary["LogicalFrameStartFromCapture_us"] = window_start_from_capture_us + frame_start_us
+    summary["LogicalFrameEndFromCapture_us"] = window_start_from_capture_us + frame_end_us
+    summary["LogicalFrameStartSample"] = int(message.get("logical_frame_start_sample", -1))
+    summary["LogicalFrameEndSample"] = int(message.get("logical_frame_end_sample", -1))
+    summary["DecoderWindowStartSample"] = int(message.get("decoder_window_start_sample", -1))
+    summary["DecoderWindowEndSample"] = int(message.get("decoder_window_end_sample", -1))
+    structural = message.get("structural_validation") or {}
+    summary["StructuralCoverage"] = float(
+        structural.get("boundary_transition_coverage", np.nan)
+    )
+    summary["TimestampModeApplied"] = timestamp_quality["applied_mode"]
+    summary["DecoderTimeAxis"] = time_axis_note
+    summary["LowThreshold_V"] = low_threshold
+    summary["HighThreshold_V"] = high_threshold
+    summary["TransitionHoldoff_us"] = holdoff_us
+
+    packet_string = bits_to_string(message["packet_data_bits"])
+    packet_hex, _ = bits_to_hex(packet_string)
+    byte_table = pd.DataFrame(
+        bits_to_hex(packet_string)[1],
+        columns=["ByteNumber", "Binary", "Hex", "Decimal", "CompleteByte"],
+    )
+
+    text = "\n".join([
+        f"Message {index} of {total}",
+        f"Source: {signal_name}",
+        "Convention: legacy midpoint transition = 0",
+        f"Decoder time axis: {time_axis_note}",
+        f"Selected window start: {window_start_from_capture_us:.3f} µs from capture start",
+        f"Logical frame start: {frame_start_us:.3f} µs from selected window start",
+        f"Logical frame end: {frame_end_us:.3f} µs from selected window start",
+        (
+            "Logical frame start: "
+            f"{window_start_from_capture_us + frame_start_us:.3f} µs from capture start"
+        ),
+        (
+            "Logical frame end: "
+            f"{window_start_from_capture_us + frame_end_us:.3f} µs from capture start"
+        ),
+        f"Clock fit pass: {message['clock_quality_pass']}",
+        f"Preamble valid: {message['preamble_valid']}",
+        f"Sync valid: {message['sync_valid']}",
+        "",
+        "Complete decoded bits:",
+        bits_to_string(message["bits"]),
+        "",
+        "Packet bits:",
+        group_bits(packet_string),
+        "",
+        "Packet HEX (MSB-first complete bytes):",
+        packet_hex or "No complete bytes",
+    ])
+
+    detail_figure = None
+    if len(message["bits"]) <= 300 and len(message["pulses"]) <= 1000:
+        detail_figure = create_figure(
+            message,
+            signal_name,
+            30_000,
+            low_threshold,
+            high_threshold,
+        )
+        # Crop the view to the logical frame boundaries reported by the decoder
+        # (first/last decoded bit cell), which excludes the pre-roll lead-in and
+        # trailing context that the decoder window includes.
+        try:
+            logical_start_us = float(message["frame_summary"]["FrameStart_us"].iloc[0])
+            logical_end_us = float(message["frame_summary"]["FrameEnd_us"].iloc[0])
+            detail_figure.update_xaxes(
+                range=[logical_start_us, logical_end_us],
+                title_text="Time relative to decoder window start (µs)",
+            )
+        except (KeyError, IndexError, TypeError, ValueError):
+            pass
+
+    return {
+        "protocol": f"Differential Manchester (message {index} of {total})",
+        "metrics": [
+            ("Message", f"{index} of {total}"),
+            ("Decoded bits", str(len(message["bits"]))),
+            ("Fitted bit time", f"{message['fitted_bit_us']:.4f} µs"),
+            ("Preamble", "PASS" if message["preamble_valid"] else "FAIL"),
+        ],
+        "status": [
+            ("Clock fit", message["clock_quality_pass"]),
+            ("Preamble valid", message["preamble_valid"]),
+            ("Sync valid", message["sync_valid"]),
+        ],
+        "tables": [
+            ("Decoded bits", message["decoded"]),
+            ("Packet bytes", byte_table),
+            ("Pulse timing", message["pulses"]),
+            ("Frame summary", summary),
+        ],
+        "text": text,
+        "figure": detail_figure,
+        "threshold_note": (
+            DIFFERENTIAL_THRESHOLD_NOTE if detail_figure is not None else None
+        ),
+    }
+
+
 # ============================================================
 # OPTIONAL DECODER
 # ============================================================
@@ -644,6 +870,102 @@ def render_decoder(
                             step=0.05,
                             format="%.5f",
                         )
+
+            multi_message = st.checkbox(
+                "Detect multiple messages (multi-burst scan)",
+                value=False,
+                help=(
+                    "Runs the conservative paired-channel scanner once and presents "
+                    "each independently validated message separately. Single-message "
+                    "captures keep the existing presentation."
+                ),
+            )
+
+            if multi_message:
+                paired_source = st.selectbox(
+                    "Paired decoder channel",
+                    list(signals),
+                    index=list(signals).index(source),
+                    help=(
+                        "The scanner correlates two channels to locate message bursts. "
+                        "Selecting the same channel is allowed."
+                    ),
+                )
+                paired_voltage = np.asarray(signals[paired_source], dtype=float)
+
+                scan_result = scan_differential_manchester_cached(
+                    decode_time,
+                    voltage,
+                    paired_voltage,
+                    nominal_bit_us,
+                    alignment,
+                    int(preamble_count),
+                    holdoff_us,
+                )
+
+                messages = scan_result.get("messages", [])
+                message_count = int(scan_result.get("message_count", len(messages)))
+                scan_metrics = scan_result.get("metrics", {})
+
+                st.markdown("#### Differential Manchester messages")
+                st.metric("Validated messages", message_count)
+
+                budget_notice = differential_budget_notice(scan_metrics)
+                if budget_notice:
+                    st.warning(budget_notice)
+
+                if message_count == 0:
+                    st.warning(
+                        "No independently validated Differential Manchester "
+                        "messages were found in the selected window."
+                    )
+                    st.caption(
+                        f"Status: {scan_result.get('status', 'unknown')} · "
+                        f"candidate regions: {scan_metrics.get('candidate_region_count', 'n/a')} · "
+                        f"decoder calls: {scan_metrics.get('decoder_calls', 'n/a')}"
+                    )
+                    return files
+
+                window_start_from_capture_us = (
+                    float(decode_time[0]) - capture_origin_s
+                ) * 1e6
+
+                summary_df = differential_message_summary(
+                    messages,
+                    window_start_from_capture_us=window_start_from_capture_us,
+                )
+                st.dataframe(summary_df, width="stretch", hide_index=True)
+                st.caption(
+                    "Start_us/End_us are relative to the selected window start. "
+                    "Manual threshold inputs apply to single-message mode only."
+                )
+                files["dm_messages_summary.csv"] = dataframe_csv_bytes(summary_df)
+                files["dm_messages_bits.csv"] = dataframe_csv_bytes(
+                    differential_message_bits(messages)
+                )
+
+                labels = [f"Message {number}" for number in range(1, len(messages) + 1)]
+                selected_label = st.selectbox("Select message", labels)
+                selected_index = int(selected_label.split()[-1])
+
+                # Reuse the already-estimated automatic levels for the reference
+                # threshold lines; no additional threshold estimation is run.
+                detail_result = differential_message_result(
+                    messages[selected_index - 1],
+                    source,
+                    timestamp_quality,
+                    time_axis_note,
+                    float(levels["low_threshold"]),
+                    float(levels["high_threshold"]),
+                    holdoff_us,
+                    selected_index,
+                    message_count,
+                    window_start_from_capture_us,
+                )
+                if detail_result.get("threshold_note"):
+                    st.caption(detail_result["threshold_note"])
+                render_result(detail_result)
+                return files
 
             logic, indices, transition_times = detect_transitions(
                 decode_time,

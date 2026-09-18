@@ -1859,6 +1859,521 @@ def decode_i2c(
     }
 
 
+def validate_differential_manchester_structure(
+    result: dict,
+    observed_transition_times_s: np.ndarray | None = None,
+    decoder_window_start_s: float = 0.0,
+    boundary_tolerance_us: float = 1.0,
+    # Structural safety threshold derived from the Phase 0.8 characterization:
+    # known-good frames showed ~96-99% boundary support while a sparse
+    # reconstruction-artifact candidate showed ~28%. This is an independent
+    # waveform-evidence guard, NOT a Differential Manchester protocol rule.
+    min_boundary_transition_coverage: float = 0.90,
+    # Conservative structural-density guard against decoder-grid false
+    # positives (sparse transitions rounded into many fitted bit cells).
+    # This is NOT a protocol frame-length requirement.
+    min_transition_count: int = 20,
+) -> dict:
+    """Validate waveform structure independently of decoder status flags."""
+    bits = np.asarray(result.get("bits", []), dtype=int)
+    decoded = result.get("decoded")
+    observed = np.asarray(
+        observed_transition_times_s if observed_transition_times_s is not None else [],
+        dtype=float,
+    )
+
+    if not isinstance(decoded, pd.DataFrame) or "Start_us" not in decoded:
+        return {
+            "accepted": False,
+            "boundary_transition_coverage": 0.0,
+            "transition_count": int(len(observed)),
+            "reason": "decoded boundary table is missing",
+        }
+
+    if len(observed) == 0 or not np.all(np.isfinite(observed)):
+        return {
+            "accepted": False,
+            "boundary_transition_coverage": 0.0,
+            "transition_count": int(len(observed)),
+            "reason": "independent waveform transitions are missing",
+        }
+
+    expected = (
+        float(decoder_window_start_s)
+        + decoded["Start_us"].to_numpy(dtype=float) * 1e-6
+    )
+    tolerance_s = boundary_tolerance_us * 1e-6
+    supported = np.asarray([
+        bool(np.any(np.abs(observed - boundary) <= tolerance_s))
+        for boundary in expected
+    ])
+    coverage = float(np.mean(supported)) if len(supported) else 0.0
+    reasons: list[str] = []
+
+    if len(bits) < 1:
+        reasons.append("no decoded bits")
+    if len(observed) < min_transition_count:
+        reasons.append("too few waveform transitions")
+    if coverage < min_boundary_transition_coverage:
+        reasons.append("insufficient boundary-transition coverage")
+
+    return {
+        "accepted": not reasons,
+        "boundary_transition_coverage": coverage,
+        "supported_boundary_count": int(np.sum(supported)),
+        "boundary_count": int(len(expected)),
+        "transition_count": int(len(observed)),
+        "decoded_bit_count": int(len(bits)),
+        "reason": "; ".join(reasons),
+    }
+
+
+def _local_timing_is_plausible(
+    transition_times_s: np.ndarray,
+    nominal_bit_time_us: float,
+) -> tuple[bool, float | None]:
+    """Cheap screening of observed transition spacing before full decoding.
+
+    ``nominal_bit_time_us`` is an empirical timing prior used ONLY to center a
+    wide plausibility band. It is not a hard-coded protocol timing value and
+    this screen does not accept or reject a frame on its own; the existing
+    decoder remains authoritative for timing fit.
+    """
+    gaps = np.diff(np.asarray(transition_times_s, dtype=float))
+    positive = gaps[gaps > 0]
+    if len(positive) == 0:
+        return False, None
+
+    median_gap_us = float(np.median(positive) * 1e6)
+    candidates = (median_gap_us, 2.0 * median_gap_us)
+    lower = 0.5 * nominal_bit_time_us
+    upper = 2.5 * nominal_bit_time_us
+    plausible = [value for value in candidates if lower <= value <= upper]
+    return bool(plausible), min(plausible, key=lambda value: abs(value - nominal_bit_time_us)) if plausible else None
+
+
+def cluster_differential_candidates(
+    candidates: list[dict],
+) -> list[dict]:
+    """Collapse overlapping channel/offset detections to one representative."""
+    ordered = sorted(
+        candidates,
+        key=lambda item: (
+            float(item.get("frame_start_us", np.inf)),
+            float(item.get("frame_end_us", np.inf)),
+        ),
+    )
+    clusters: list[list[dict]] = []
+
+    for candidate in ordered:
+        if not clusters:
+            clusters.append([candidate])
+            continue
+
+        current = clusters[-1]
+        current_end = max(float(item["frame_end_us"]) for item in current)
+        start = float(candidate["frame_start_us"])
+        if start <= current_end:
+            current.append(candidate)
+        else:
+            clusters.append([candidate])
+
+    representatives: list[dict] = []
+    for cluster in clusters:
+        def bit_count(item: dict) -> int:
+            bits = item.get("bits", [])
+            return len(bits) if hasattr(bits, "__len__") else int(bits or 0)
+
+        representative = min(
+            cluster,
+            key=lambda item: (
+                not bool(item.get("structural_validation", {}).get("accepted", False)),
+                float(item.get("rms_fit_error_us", np.inf)),
+                float(item.get("max_fit_error_us", np.inf)),
+                -bit_count(item),
+            ),
+        )
+        representatives.append(representative)
+
+    return representatives
+
+
+def _paired_activity_regions(
+    time_s: np.ndarray,
+    transition_times: list[np.ndarray],
+    activity_gap_us: float,
+    minimum_transition_count: int,
+) -> list[tuple[int, int]]:
+    gap_s = activity_gap_us * 1e-6
+    channel_regions: list[list[tuple[float, float, int]]] = []
+
+    for events in transition_times:
+        if len(events) == 0:
+            channel_regions.append([])
+            continue
+
+        regions: list[tuple[float, float, int]] = []
+        start = end = float(events[0])
+        count = 1
+        for event in events[1:]:
+            event = float(event)
+            if event - end <= gap_s:
+                end = event
+                count += 1
+            else:
+                if count >= minimum_transition_count:
+                    regions.append((start, end, count))
+                start = end = event
+                count = 1
+        if count >= minimum_transition_count:
+            regions.append((start, end, count))
+        channel_regions.append(regions)
+
+    if len(channel_regions) < 2:
+        return []
+
+    paired: list[tuple[float, float, int]] = []
+    for left_start, left_end, left_count in channel_regions[0]:
+        for right_start, right_end, right_count in channel_regions[1]:
+            overlap = min(left_end, right_end) - max(left_start, right_start)
+            gap = max(0.0, max(left_start, right_start) - min(left_end, right_end))
+            if overlap >= 0.0 or gap <= gap_s:
+                paired.append((
+                    min(left_start, right_start),
+                    max(left_end, right_end),
+                    left_count + right_count,
+                ))
+
+    paired.sort()
+    merged: list[tuple[float, float, int]] = []
+    for start, end, count in paired:
+        if merged and start <= merged[-1][1] + gap_s:
+            old_start, old_end, old_count = merged[-1]
+            merged[-1] = (old_start, max(old_end, end), old_count + count)
+        else:
+            merged.append((start, end, count))
+
+    return [
+        (
+            max(0, int(np.searchsorted(time_s, start, side="left")) - 1),
+            min(len(time_s) - 1, int(np.searchsorted(time_s, end, side="right"))),
+        )
+        for start, end, _ in merged
+    ]
+
+
+def _voltage_activity_regions(
+    time_s: np.ndarray,
+    voltage: np.ndarray,
+    amplitude_floor_v: float = 0.15,
+    close_gap_us: float = 250.0,
+    minimum_duration_us: float = 200.0,
+) -> list[tuple[float, float]]:
+    """Find coarse active voltage envelopes for paired-channel prefiltering."""
+    baseline = float(np.median(voltage))
+    active = np.abs(voltage - baseline) >= amplitude_floor_v
+    indices = np.flatnonzero(active)
+    if len(indices) == 0:
+        return []
+
+    sample_dt = float(np.median(np.diff(time_s)))
+    close_samples = max(1, int(round(close_gap_us * 1e-6 / sample_dt)))
+    minimum_duration_s = minimum_duration_us * 1e-6
+    regions: list[tuple[float, float]] = []
+    start = end = int(indices[0])
+
+    for index in indices[1:]:
+        index = int(index)
+        if index <= end + close_samples:
+            end = index
+            continue
+        if time_s[end] - time_s[start] >= minimum_duration_s:
+            regions.append((float(time_s[start]), float(time_s[end])))
+        start = end = index
+
+    if time_s[end] - time_s[start] >= minimum_duration_s:
+        regions.append((float(time_s[start]), float(time_s[end])))
+    return regions
+
+
+def _paired_voltage_activity_regions(
+    time_s: np.ndarray,
+    channels: list[np.ndarray],
+    pairing_gap_us: float,
+    padding_us: float = 500.0,
+) -> list[tuple[int, int]]:
+    channel_regions = [
+        _voltage_activity_regions(time_s, channel)
+        for channel in channels
+    ]
+    gap_s = pairing_gap_us * 1e-6
+    paired: list[tuple[float, float]] = []
+    for left_start, left_end in channel_regions[0]:
+        for right_start, right_end in channel_regions[1]:
+            overlap = min(left_end, right_end) - max(left_start, right_start)
+            gap = max(0.0, max(left_start, right_start) - min(left_end, right_end))
+            if overlap >= 0.0 or gap <= gap_s:
+                paired.append((min(left_start, right_start), max(left_end, right_end)))
+
+    paired.sort()
+    merged: list[tuple[float, float]] = []
+    for start, end in paired:
+        if merged and start <= merged[-1][1] + gap_s:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+
+    padding_s = padding_us * 1e-6
+    end_padding_s = min(padding_s, 100e-6)
+    return [
+        (
+            max(
+                0,
+                int(np.searchsorted(time_s, start - padding_s, side="left")) - 1,
+            ),
+            min(
+                len(time_s) - 1,
+                int(np.searchsorted(time_s, end + end_padding_s, side="right")),
+            ),
+        )
+        for start, end in merged
+    ]
+
+
+def scan_differential_manchester(
+    time_s: np.ndarray,
+    channel_a: np.ndarray,
+    channel_b: np.ndarray,
+    nominal_bit_time_us: float = 12.8,
+    alignment: str = "First transition is bit start",
+    preamble_count: int = 22,
+    transition_holdoff_us: float = 0.0,
+    # Decoder-window context required before the logical first transition so the
+    # existing decoder can construct complete leading bit cells. This is an
+    # orchestration requirement, NOT part of the protocol timing.
+    pre_roll_us: float = 30.0,
+    activity_gap_us: float = 500.0,
+    max_starts_per_region: int = 128,
+    # Pathological-capture guard only: generous global ceiling on expensive
+    # decoder calls for one invocation. Normal captures never reach it; if it
+    # is reached, already-validated results are returned unchanged.
+    max_decoder_calls: int = 10_000,
+) -> dict:
+    """Conservatively scan paired channels using the existing DM decoder."""
+    time_s = np.asarray(time_s, dtype=float)
+    channel_a = np.asarray(channel_a, dtype=float)
+    channel_b = np.asarray(channel_b, dtype=float)
+
+    if (
+        time_s.ndim != 1
+        or channel_a.ndim != 1
+        or channel_b.ndim != 1
+        or len(time_s) != len(channel_a)
+        or len(time_s) != len(channel_b)
+    ):
+        raise ValueError("Time and paired channels must be matching one-dimensional arrays.")
+    if len(time_s) < 20 or not np.all(np.isfinite(time_s)):
+        raise ValueError("At least 20 finite time samples are required.")
+    if np.any(np.diff(time_s) <= 0):
+        raise ValueError("Differential Manchester scanning requires strictly increasing time.")
+
+    channels = [channel_a, channel_b]
+    transition_data: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    for channel in channels:
+        try:
+            levels = estimate_logic_levels_and_thresholds(channel)
+            logic, indices, times = detect_transitions(
+                time_s,
+                channel,
+                levels["low_threshold"],
+                levels["high_threshold"],
+                transition_holdoff_us,
+            )
+        except ValueError:
+            return {
+                "protocol": "Differential Manchester",
+                "status": "no_validated_messages",
+                "message_count": 0,
+                "messages": [],
+                "metrics": {
+                    "candidate_region_count": 0,
+                    "decoder_calls": 0,
+                    "rejected_candidates": 0,
+                },
+            }
+        transition_data.append((logic, indices, times))
+
+    event_regions = _paired_activity_regions(
+        time_s,
+        [item[2] for item in transition_data],
+        activity_gap_us,
+        minimum_transition_count=20,
+    )
+    voltage_regions = _paired_voltage_activity_regions(
+        time_s,
+        channels,
+        pairing_gap_us=activity_gap_us,
+    )
+    if not event_regions:
+        regions = voltage_regions
+    elif voltage_regions and len(event_regions) > max(8, 2 * len(voltage_regions)):
+        regions = voltage_regions
+    else:
+        regions = event_regions
+    region_padding_s = max(pre_roll_us * 3e-6, 100e-6)
+    regions = [
+        (
+            max(0, int(np.searchsorted(
+                time_s,
+                time_s[start] - region_padding_s,
+                side="left",
+            ))),
+            min(len(time_s) - 1, int(np.searchsorted(
+                time_s,
+                time_s[end] + region_padding_s,
+                side="right",
+            ))),
+        )
+        for start, end in regions
+    ]
+    accepted: list[dict] = []
+    rejected_count = 0
+    timing_prefilter_rejections = 0
+    decoder_calls = 0
+    decoder_call_budget_hit = False
+
+    for region_start, region_end in regions:
+        if decoder_call_budget_hit:
+            break
+        for channel_index, channel in enumerate(channels):
+            if decoder_call_budget_hit:
+                break
+            region_time = time_s[region_start:region_end + 1]
+            region_voltage = channel[region_start:region_end + 1]
+            try:
+                region_levels = estimate_logic_levels_and_thresholds(region_voltage)
+                region_logic, local_indices, local_times = detect_transitions(
+                    region_time,
+                    region_voltage,
+                    region_levels["low_threshold"],
+                    region_levels["high_threshold"],
+                    transition_holdoff_us,
+                )
+            except ValueError:
+                continue
+            if len(local_indices) < 4:
+                continue
+
+            if len(local_indices) <= max_starts_per_region:
+                starts = local_indices
+            else:
+                positions = np.linspace(
+                    0,
+                    len(local_indices) - 1,
+                    max_starts_per_region,
+                    dtype=int,
+                )
+                starts = local_indices[positions]
+            for start_index in starts:
+                if decoder_calls >= max_decoder_calls:
+                    decoder_call_budget_hit = True
+                    break
+                start_index = int(start_index)
+                pre_roll_start = max(
+                    region_start,
+                    int(np.searchsorted(
+                        time_s,
+                        time_s[region_start + start_index]
+                        - pre_roll_us * 1e-6,
+                        side="left",
+                    )),
+                )
+                candidate_indices = local_indices[local_indices >= start_index]
+                candidate_times = local_times[local_indices >= start_index]
+                if len(candidate_indices) < 4:
+                    continue
+                timing_ok, local_timing_us = _local_timing_is_plausible(
+                    candidate_times,
+                    nominal_bit_time_us,
+                )
+                if not timing_ok:
+                    timing_prefilter_rejections += 1
+                    continue
+
+                relative_indices = (
+                    region_start + candidate_indices - pre_roll_start
+                )
+                candidate_time = time_s[pre_roll_start:region_end + 1]
+                candidate_voltage = channel[pre_roll_start:region_end + 1]
+                logic_start = pre_roll_start - region_start
+                candidate_logic = region_logic[logic_start:]
+                decoder_calls += 1
+
+                try:
+                    result = decode_waveform(
+                        candidate_time,
+                        candidate_voltage,
+                        candidate_logic,
+                        relative_indices,
+                        candidate_times,
+                        nominal_bit_time_us,
+                        alignment,
+                        preamble_count,
+                    )
+                except (ValueError, ArithmeticError, np.linalg.LinAlgError):
+                    rejected_count += 1
+                    continue
+
+                structural = validate_differential_manchester_structure(
+                    result,
+                    observed_transition_times_s=candidate_times,
+                    decoder_window_start_s=float(candidate_time[0]),
+                )
+                if not (
+                    result["preamble_valid"]
+                    and result["sync_valid"]
+                    and result["clock_quality_pass"]
+                    and structural["accepted"]
+                ):
+                    rejected_count += 1
+                    continue
+
+                summary = result["frame_summary"].iloc[0]
+                decoder_window_start = float(candidate_time[0])
+                frame_start = decoder_window_start + float(summary["FrameStart_us"]) * 1e-6
+                frame_end = decoder_window_start + float(summary["FrameEnd_us"]) * 1e-6
+                accepted.append({
+                    **result,
+                    "source_channel_index": channel_index,
+                    "frame_start_us": (frame_start - time_s[0]) * 1e6,
+                    "frame_end_us": (frame_end - time_s[0]) * 1e6,
+                    "decoder_window_start_sample": pre_roll_start,
+                    "decoder_window_end_sample": region_end,
+                    "logical_frame_start_sample": int(np.searchsorted(time_s, frame_start)),
+                    "logical_frame_end_sample": int(np.searchsorted(time_s, frame_end)),
+                    "structural_validation": structural,
+                    "local_timing_us": local_timing_us,
+                    "rms_fit_error_us": result["rms_fit_error_us"],
+                    "max_fit_error_us": result["max_fit_error_us"],
+                })
+
+    representatives = cluster_differential_candidates(accepted)
+    status = "validated" if representatives else "no_validated_messages"
+    return {
+        "protocol": "Differential Manchester",
+        "status": status,
+        "message_count": len(representatives),
+        "messages": representatives,
+        "metrics": {
+            "candidate_region_count": len(regions),
+            "decoder_calls": decoder_calls,
+            "rejected_candidates": rejected_count,
+            "timing_prefilter_rejections": timing_prefilter_rejections,
+            "decoder_call_budget_hit": decoder_call_budget_hit,
+        },
+    }
+
+
 
 
 

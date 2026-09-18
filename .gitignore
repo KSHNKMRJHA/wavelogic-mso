@@ -31,3 +31,7 @@ Thumbs.db
 
 # Generated sample/scratch
 *.pyc
+*.log
+
+# Local capture workspace (development data, not part of the release)
+sample_latest/

@@ -97,6 +97,7 @@ RS-232** → source = `TX` → baud 9600 → see the decoded bytes.
 | [docs/GUIDE.md](docs/GUIDE.md) | Step-by-step tutorial (view, math, decode, export) |
 | [docs/FEATURES.md](docs/FEATURES.md) | Full feature list |
 | [docs/CREDITS.md](docs/CREDITS.md) | Credits and license |
+| [RELEASE_NOTES.md](RELEASE_NOTES.md) | Multi-message Differential Manchester release notes |
 | In-app pages | Introduction, User Guide, Features, Credits (sidebar) |
 
 ## CSV format
@@ -127,15 +128,102 @@ Time(s),CH1,CH2
 | NRZ | phase, bits/word, MSB-first | bits + hex words |
 | PWM | per-pulse | period & duty per pulse |
 
+## Differential Manchester: multi-message analysis
+
+The legacy Differential Manchester decoder analyzes one frame per selected
+window. An optional, conservative multi-message scanner can locate and present
+several independently validated bursts in the same capture.
+
+Enable **Detect multiple messages (multi-burst scan)** when analyzing captures
+that may contain multiple Differential Manchester bursts. Multi-message mode is
+opt-in so the established single-message presentation stays the default.
+
+Multi-message mode provides:
+
+- a validated-message count and a compact per-message summary table
+- **Message N** selection with a per-message detail view
+- logical frame start/end offsets (distinct from the decoder window and pre-roll)
+- per-message waveform detail cropped to the logical frame boundaries
+- CSV exports: `dm_messages_summary.csv` and `dm_messages_bits.csv`
+
+With multi-message mode disabled, the existing single-message decoder, threshold
+controls, plotting, and exports behave exactly as before.
+
+### Acceptance model (conservative by design)
+
+A decoder timing fit alone is not sufficient evidence. A candidate is presented
+as a validated message only when several independent signals agree:
+
+- paired channel activity (the two selected channels are correlated)
+- transition-aligned candidate search with decoder pre-roll context
+- cheap local timing plausibility screening
+- the existing Differential Manchester decoder's own checks (preamble, sync,
+  clock fit)
+- independent raw-transition structural validation against the decoded
+  boundaries (boundary-transition coverage computed from the original samples)
+- duplicate clustering so one physical frame is not reported twice
+- continued scanning after rejected candidates (recovery)
+
+These are engineering safety heuristics, not formal protocol specifications.
+
+### Timing caveat
+
+`~12.8 µs` is an empirical timing prior used only to bound a cheap plausibility
+prefilter for the current capture family. It is **not** a universal Differential
+Manchester protocol constant, and a fitted timing value by itself does not
+accept a message. Candidates are judged by independent transition structure, not
+by their fitted timing value alone.
+
+### Long captures
+
+For long or noisy captures the scanner reports only independently validated
+frames. If none are found, the UI reports that no independently validated
+message was found under the current conservative criteria — it does not assert
+that no frame exists.
+
+### Decoder-call budget
+
+Scanning runs under a bounded decoder-call budget so pathological captures
+cannot trigger unbounded work. Reaching the budget means the scan may be
+incomplete: messages already validated remain valid, and the UI warns that
+additional messages may exist. A budget-limited scan must not be read as an
+exhaustive negative result.
+
+### Offsets
+
+Each validated message exposes its logical frame start/end separately from the
+decoder window (which includes pre-roll context). Logical boundaries describe
+the decoded message; the decoder window describes the input supplied to the
+decoder. Window-relative and capture-relative times are both reported so the
+time origin is never ambiguous.
+
+### Architecture
+
+```text
+CSV
+  -> preprocessing / time handling
+  -> protocol-specific candidate detection
+  -> existing decoder (authoritative bitstream decoder)
+  -> independent validation
+  -> clustering
+  -> aggregation
+  -> UI / export
+```
+
+The existing decoder remains the authoritative bitstream decoder; the
+orchestration layer only decides whether a candidate has sufficient independent
+waveform evidence to be presented as a validated message.
+
 ## Development
 
 ```bash
 python -m py_compile analyzer_core.py app.py
+python -m unittest discover -s tests
 ```
 
 The core analysis lives in `analyzer_core.py` (UI-free, unit-testable); the UI
 lives in `app.py`; branding lives in `branding.py`; in-app docs live in
-`pages/`.
+`pages/`; decoder tests live in `tests/`.
 
 ### Building the Windows installer from source
 
