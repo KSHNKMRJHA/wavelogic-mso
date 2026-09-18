@@ -129,7 +129,7 @@ Time(s),CH1,CH2
 | SPI (4-wire) | CPOL/CPHA, active CS, bits/word, MSB-first, CS-gap merge | frames: MOSI/MISO words per frame |
 | I2C (7-bit) | SCL + SDA | transcript: START, address+R/W, ACK/NACK, data, STOP |
 | Manchester | bit alignment | bits + hex words |
-| Differential Manchester | analysis mode (Multi-message / Burst Scan or Single Frame), Channel A/B, nominal bit time, preamble count, clock alignment, transition hold-off | validated messages count, per-message summary, decoded bits + hex per message (Single Frame: bits + hex groups) |
+| Differential Manchester | analysis mode (Multi-message / Burst Scan or Single Frame), decoder signal source (single/derived signal or differential pair), nominal bit time, preamble count, clock alignment, transition hold-off | validated messages count, per-message summary, decoded bits + hex per message (Single Frame: bits + hex groups) |
 | NRZ | phase, bits/word, MSB-first | bits + hex words |
 | PWM | per-pulse | period & duty per pulse |
 
@@ -140,20 +140,32 @@ Differential Manchester analysis offers two explicit **Analysis mode** options:
 | Analysis mode | When to use | What it does |
 | --- | --- | --- |
 | **Multi-message / Burst Scan** *(default)* | Captures that may contain one or more messages | Scans the selected capture/window with the paired-channel scanner and presents each independently validated message |
-| **Single Frame** | A window you have deliberately cropped to one frame | Runs the legacy single-frame decoder on Channel A |
+| **Single Frame** | A window you have deliberately cropped to one frame | Runs the legacy single-frame decoder on the selected signal |
 
 Multi-message / Burst Scan does **not** require you to crop the capture to a
 single frame first, and the legacy decoder is never applied to an entire
 capture in that mode.
 
-### Channels
+### Decoder signal source
 
-Analysis uses two waveform channels, **Channel A** and **Channel B**. Select the
-two electrical channels carrying the differential pair. The UI suggests a likely
-pair based on which channels are most active in the current window (for example
-`CH3` / `CH4`); the suggestion is only a convenience and never overrides a manual
-selection. Common captures often use `CH3` / `CH4`, but that is an example, not a
-requirement.
+WaveLogic MSO always decodes **one logical waveform**. Choose how that waveform
+is provided:
+
+| Source | What it means | Controls |
+| --- | --- | --- |
+| **Single / derived signal** *(default)* | Decode one waveform directly | **Decode signal** — a physical channel (e.g. `CH3`) or a math/derived channel you created (e.g. `MATH: CH3 - CH4`) |
+| **Differential pair** | WaveLogic MSO constructs one differential waveform from two physical channels | **Positive (+)** and **Negative (−)**, plus a live `Derived signal: CH3 − CH4` readout |
+
+The **Decode signal** list contains everything currently available to the
+decoder — physical channels and any visible math/derived channel. Nothing is
+computed twice: a math channel shown on the scope is the same signal offered to
+the decoder.
+
+In **Differential pair** mode a suggestion such as *Suggested differential pair:
+CH3(V) / CH4(V)* may appear when two channels are clearly the most active. The
+suggestion is only a convenience, applies only to differential-pair mode, and is
+never a guaranteed protocol identification. Common captures often use
+`CH3`/`CH4`, but that is an example, not a requirement.
 
 ### Timing configuration
 
@@ -194,7 +206,8 @@ protection and the data is never silently cropped. Either:
 A decoder timing fit alone is not sufficient evidence. A candidate is presented
 as a validated message only when several independent signals agree:
 
-- paired channel activity (the two selected channels are correlated)
+- paired channel activity (in differential-pair mode the two selected channels
+  are correlated)
 - transition-aligned candidate search with decoder pre-roll context
 - cheap local timing plausibility screening
 - the existing Differential Manchester decoder's own checks (preamble, sync,
@@ -262,8 +275,8 @@ waveform evidence to be presented as a validated message.
 | "required channel missing" | Tick the channel under **Show simultaneously** in the sidebar. |
 | Warning: timestamps "not strictly increasing" | Expected for duplicated/quantized timestamps — a uniform time axis is reconstructed for display and decoding. |
 | Single Frame: "the selected window spans too many half-bit cells" | The window is too large for the single-frame decoder. Narrow the **Window** controls to one frame, or switch **Analysis mode** to **Multi-message / Burst Scan**. |
-| Burst Scan: "No independently validated Differential Manchester messages were found" | Check the channel pair (Channel A / Channel B), the nominal bit time, and the selected capture window. The scanner only reports independently validated messages. |
-| Burst Scan: budget warning | The decoder-call budget was reached; messages already validated remain valid, but the scan may be incomplete. Narrow the window or refine the channel pair. |
+| Burst Scan: "No independently validated Differential Manchester messages were found" | Check the decoder signal (and, in differential-pair mode, the Positive/Negative channels), the nominal bit time, and the selected capture window. The scanner only reports independently validated messages. |
+| Burst Scan: budget warning | The decoder-call budget was reached; messages already validated remain valid, but the scan may be incomplete. Narrow the window or refine the decoder signal. |
 | Slow chart on huge files | Display decimation is automatic; decoding and exports use full resolution. |
 
 ## Debug & Logs

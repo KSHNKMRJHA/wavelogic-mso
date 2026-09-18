@@ -121,14 +121,24 @@ Protocol → **Differential Manchester (legacy project)**.
   one frame; it runs the legacy single-frame decoder for detailed analysis of
   that frame.
 
-### Step C — Select Channel A / Channel B
+### Step C — Choose the decoder signal source
 
-- Choose the two waveform channels that carry the differential pair.
-- The UI may show a suggestion such as *Suggested differential pair:
-  CH3(V) / CH4(V)* when two channels are clearly the most active. The
-  suggestion is only a convenience, **not** a guaranteed protocol
-  identification; you can always select the channels manually.
-- Some captures use CH3/CH4; treat that as an example, not a rule.
+WaveLogic MSO always decodes **one logical waveform**. Choose how it is provided:
+
+- **Single / derived signal** *(default)* — decode one waveform directly via the
+  **Decode signal** dropdown. It lists every signal available to the decoder: a
+  physical channel (for example `CH3`), or a math/derived channel you created
+  (for example `MATH: CH3 - CH4`).
+- **Differential pair** — WaveLogic MSO constructs one differential waveform
+  from two physical channels. Select **Positive (+)** and **Negative (−)**; the
+  panel shows the derived signal (for example `Derived signal: CH3(V) − CH4(V)`).
+
+In **Differential pair** mode the UI may show a suggestion such as *Suggested
+differential pair: CH3(V) / CH4(V)* when two channels are clearly the most
+active. The suggestion is only a convenience, applies only to differential-pair
+mode, and is **not** a guaranteed protocol identification — you can always select
+the channels manually. Some captures use CH3/CH4; treat that as an example, not a
+rule.
 
 ### Step D — Timing configuration
 
@@ -200,6 +210,6 @@ downloaded.
 | "required channel missing" | Tick the channel under **Show simultaneously**. |
 | Decoder warning "not strictly increasing" | Expected — a uniform time axis was reconstructed for display and decoding. The decoder still receives full-resolution samples. |
 | Single Frame: "the selected window spans too many half-bit cells" | Narrow the **Window** controls to one frame, or switch **Analysis mode** to **Multi-message / Burst Scan**. |
-| Burst Scan: "No independently validated messages were found" | Check the channel pair (Channel A / Channel B), the nominal bit time, and the selected window. Only independently validated messages are reported. |
-| Burst Scan: decoder-call budget warning | The scan may be incomplete; validated messages remain valid. Narrow the window or refine the channel pair. |
+| Burst Scan: "No independently validated messages were found" | Check the decoder signal (and, in differential-pair mode, the Positive/Negative channels), the nominal bit time, and the selected window. Only independently validated messages are reported. |
+| Burst Scan: decoder-call budget warning | The scan may be incomplete; validated messages remain valid. Narrow the window or refine the decoder signal. |
 | Slow chart on huge files | Display simplification is automatic; decoding and exports keep full resolution. |

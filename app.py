@@ -686,6 +686,9 @@ def differential_message_result(
 MULTI_MESSAGE_MODE = "Multi-message / Burst Scan"
 SINGLE_FRAME_MODE = "Single Frame"
 
+SINGLE_SIGNAL_MODE = "Single / derived signal"
+DIFFERENTIAL_PAIR_MODE = "Differential pair"
+
 _TOO_MANY_HALF_BIT_CELLS_MARKER = "too many half-bit cells"
 
 
@@ -693,16 +696,14 @@ def _render_section_label(text: str) -> None:
     st.markdown(f'<div class="mso-section">{text}</div>', unsafe_allow_html=True)
 
 
-def suggest_differential_pair(
+def channel_activity_spreads(
     signals: dict[str, np.ndarray],
     max_samples: int = 50_000,
-) -> tuple[str | None, str | None, str | None]:
-    """Suggest the most plausibly active two-channel pair for burst scanning.
+) -> dict[str, float]:
+    """Robust voltage spread per signal, used only for UI suggestions.
 
-    UI hint only — ranks channels by robust voltage spread over the current
-    window and returns the top two when they clearly dominate the rest. It never
-    overrides the user's manual Channel A / Channel B selection and is not a
-    confidence score.
+    Signals are decimated before measuring so this stays cheap on very large
+    captures. Signals with fewer than 20 finite samples are ignored.
     """
     spreads: dict[str, float] = {}
     for name, values in signals.items():
@@ -718,6 +719,29 @@ def suggest_differential_pair(
             spreads[name] = float(np.std(finite))
         except Exception:
             continue
+    return spreads
+
+
+def suggest_single_signal(signals: dict[str, np.ndarray]) -> str | None:
+    """Return the most active signal name, or None. A UI convenience only."""
+    spreads = channel_activity_spreads(signals)
+    if not spreads:
+        return None
+    return max(spreads.items(), key=lambda item: item[1])[0]
+
+
+def suggest_differential_pair(
+    signals: dict[str, np.ndarray],
+    max_samples: int = 50_000,
+) -> tuple[str | None, str | None, str | None]:
+    """Suggest a plausibly active two-channel pair for differential mode.
+
+    UI hint only — ranks signals by robust voltage spread over the current
+    window and returns the top two when they clearly dominate the rest. It never
+    overrides the user's manual Positive / Negative selection and is not a
+    confidence score.
+    """
+    spreads = channel_activity_spreads(signals, max_samples)
 
     if len(spreads) < 2:
         return None, None, None
@@ -733,6 +757,77 @@ def suggest_differential_pair(
         return None, None, None
 
     return first_name, second_name, f"Suggested differential pair: {first_name} / {second_name}"
+
+
+def differential_from_pair(
+    positive: np.ndarray,
+    negative: np.ndarray,
+) -> np.ndarray:
+    """Derive a single differential waveform ``positive - negative``."""
+    a = np.asarray(positive, dtype=float)
+    b = np.asarray(negative, dtype=float)
+    with np.errstate(invalid="ignore", over="ignore"):
+        difference = a - b
+    return np.where(np.isfinite(difference), difference, np.nan)
+
+
+def resolve_decoder_signals(
+    signals: dict[str, np.ndarray],
+    source_mode: str,
+    single_name: str | None = None,
+    positive_name: str | None = None,
+    negative_name: str | None = None,
+) -> dict:
+    """Resolve the decoder signal source into concrete waveform arrays.
+
+    The decoder always ends up decoding ONE logical waveform:
+
+    - ``SINGLE_SIGNAL_MODE``: the selected waveform (a physical channel or a
+      user-created math/derived channel) is used directly.
+    - ``DIFFERENTIAL_PAIR_MODE``: the differential waveform
+      ``positive - negative`` is constructed from two physical channels.
+
+    ``primary``/``secondary`` expose the two waveforms the burst scanner
+    correlates (for single mode the selected waveform is used for both), while
+    ``single_signal`` is the single waveform used by the legacy single-frame
+    decoder.
+    """
+    names = list(signals)
+    if not names:
+        raise ValueError("No waveform signal is available for decoding.")
+
+    if source_mode == SINGLE_SIGNAL_MODE:
+        name = single_name if single_name in signals else names[0]
+        signal = np.asarray(signals[name], dtype=float)
+        return {
+            "source_mode": SINGLE_SIGNAL_MODE,
+            "label": name,
+            "single_signal": signal,
+            "primary": signal,
+            "secondary": signal,
+            "positive": name,
+            "negative": name,
+            "is_pair": False,
+        }
+
+    positive = positive_name if positive_name in signals else names[0]
+    negative = (
+        negative_name
+        if negative_name in signals and negative_name != positive
+        else next((name for name in names if name != positive), positive)
+    )
+    primary = np.asarray(signals[positive], dtype=float)
+    secondary = np.asarray(signals[negative], dtype=float)
+    return {
+        "source_mode": DIFFERENTIAL_PAIR_MODE,
+        "label": f"{positive} \u2212 {negative}",
+        "single_signal": differential_from_pair(primary, secondary),
+        "primary": primary,
+        "secondary": secondary,
+        "positive": positive,
+        "negative": negative,
+        "is_pair": True,
+    }
 
 
 def is_too_many_half_bit_cells_error(exc: BaseException) -> bool:
@@ -768,10 +863,10 @@ def render_long_window_guidance(
 def render_multi_message_scan(
     files: dict[str, bytes],
     decode_time: np.ndarray,
-    channel_a_voltage: np.ndarray,
-    channel_b_voltage: np.ndarray,
-    channel_a_name: str,
-    channel_b_name: str,
+    primary_voltage: np.ndarray,
+    secondary_voltage: np.ndarray,
+    decoder_signal_label: str,
+    source_mode: str,
     nominal_bit_us: float,
     alignment: str,
     preamble_count: int,
@@ -785,22 +880,23 @@ def render_multi_message_scan(
 
     Candidate discovery and validation are delegated entirely to the existing
     paired-channel scanner; the legacy decoder is never applied to the whole
-    capture here.
+    capture here. ``primary_voltage``/``secondary_voltage`` are the two waveforms
+    the scanner correlates (for single-signal mode they are the same waveform).
     """
     window_duration_us = (
         float(decode_time[-1] - decode_time[0]) * 1e6 if len(decode_time) else 0.0
     )
 
     debug_log(
-        f"Burst scan start: A={channel_a_name} B={channel_b_name} "
+        f"Burst scan start: source={source_mode} signal={decoder_signal_label} "
         f"bit_time_us={nominal_bit_us} preamble={int(preamble_count)} "
         f"samples={len(decode_time)} window_us={window_duration_us:.3f}"
     )
 
     scan_result = scan_differential_manchester_cached(
         decode_time,
-        channel_a_voltage,
-        channel_b_voltage,
+        primary_voltage,
+        secondary_voltage,
         nominal_bit_us,
         alignment,
         int(preamble_count),
@@ -825,6 +921,7 @@ def render_multi_message_scan(
 
     _render_section_label("Result")
     st.markdown("#### Differential Manchester — Burst Scan")
+    st.caption(f"Decoder signal: {decoder_signal_label}")
     st.metric("Validated messages", message_count)
 
     budget_notice = differential_budget_notice(scan_metrics)
@@ -838,6 +935,8 @@ def render_multi_message_scan(
         )
         st.dataframe(
             _diagnostics_frame([
+                ("Decoder signal", decoder_signal_label),
+                ("Signal source", source_mode),
                 ("Scanner status", status),
                 ("Candidate regions", scan_metrics.get("candidate_region_count", "n/a")),
                 ("Decoder calls", scan_metrics.get("decoder_calls", "n/a")),
@@ -845,15 +944,13 @@ def render_multi_message_scan(
                     "Decoder-call budget hit",
                     scan_metrics.get("decoder_call_budget_hit", "n/a"),
                 ),
-                ("Channel A", channel_a_name),
-                ("Channel B", channel_b_name),
                 ("Nominal bit time (µs)", f"{nominal_bit_us:.4f}"),
                 ("Window duration (µs)", f"{window_duration_us:.3f}"),
             ]),
             width="stretch",
             hide_index=True,
         )
-        st.info("Check the channel pair, bit time, and selected capture window.")
+        st.info("Check the decoder signal, bit time, and selected capture window.")
         return files
 
     window_start_from_capture_us = (
@@ -879,8 +976,8 @@ def render_multi_message_scan(
     selected_index = int(selected_label.split()[-1])
 
     # Reference threshold lines reuse already-available levels; never required.
-    levels = safe_logic_levels(channel_a_voltage) or safe_logic_levels(
-        channel_b_voltage
+    levels = safe_logic_levels(primary_voltage) or safe_logic_levels(
+        secondary_voltage
     )
     if levels is None:
         reference_low = float("nan")
@@ -891,7 +988,7 @@ def render_multi_message_scan(
 
     detail_result = differential_message_result(
         messages[selected_index - 1],
-        channel_a_name,
+        decoder_signal_label,
         timestamp_quality,
         time_axis_note,
         reference_low,
@@ -1072,23 +1169,7 @@ def render_decoder(
 
     try:
         if protocol == "Differential Manchester (legacy project)":
-            channel_names = list(signals)
-            suggested_a, suggested_b, suggestion_hint = suggest_differential_pair(
-                signals
-            )
-
-            default_a = suggested_a if suggested_a in signals else channel_names[0]
-            if len(channel_names) > 1:
-                default_b = (
-                    suggested_b
-                    if suggested_b in signals and suggested_b != default_a
-                    else next(
-                        (name for name in channel_names if name != default_a),
-                        default_a,
-                    )
-                )
-            else:
-                default_b = default_a
+            signal_names = list(signals)
 
             _render_section_label("Analysis mode")
             analysis_mode = st.radio(
@@ -1098,35 +1179,100 @@ def render_decoder(
                 horizontal=True,
                 key="dm_analysis_mode",
                 help=(
-                    "Burst Scan uses the paired-channel scanner to locate and "
-                    "independently validate every message in the window. Single "
-                    "Frame runs the legacy decoder on one frame."
+                    "Burst Scan locates and independently validates every message "
+                    "in the window using the selected signal source. Single Frame "
+                    "runs the legacy decoder on one frame."
                 ),
             )
 
-            _render_section_label("Channels")
-            channel_col_a, channel_col_b = st.columns(2)
-            with channel_col_a:
-                channel_a = st.selectbox(
-                    "Channel A",
-                    channel_names,
-                    index=channel_names.index(default_a),
-                    key="dm_channel_a",
-                    help="Primary decoder channel.",
+            _render_section_label("Decoder signal source")
+            source_mode = st.radio(
+                "Decoder Signal Source",
+                [SINGLE_SIGNAL_MODE, DIFFERENTIAL_PAIR_MODE],
+                index=0,
+                horizontal=True,
+                key="dm_source_mode",
+                help=(
+                    "Single / derived signal decodes one waveform (a physical "
+                    "channel, or a math/derived channel you created). Differential "
+                    "pair builds one differential waveform from two physical "
+                    "channels."
+                ),
+            )
+
+            suggested_single = suggest_single_signal(signals)
+            single_default = (
+                suggested_single if suggested_single in signals else signal_names[0]
+            )
+
+            if source_mode == SINGLE_SIGNAL_MODE:
+                decode_signal = st.selectbox(
+                    "Decode signal",
+                    signal_names,
+                    index=signal_names.index(single_default),
+                    key="dm_decode_signal",
+                    help=(
+                        "The decoder converts this waveform to logic levels and "
+                        "decodes it. Includes physical channels and any visible "
+                        "math/derived channels."
+                    ),
                 )
-            with channel_col_b:
-                channel_b = st.selectbox(
-                    "Channel B",
-                    channel_names,
-                    index=channel_names.index(default_b),
-                    key="dm_channel_b",
-                    help="Second channel correlated by the burst scanner.",
+                resolved = resolve_decoder_signals(
+                    signals,
+                    source_mode,
+                    single_name=decode_signal,
                 )
-            if suggestion_hint:
+            else:
+                suggested_a, suggested_b, suggestion_hint = (
+                    suggest_differential_pair(signals)
+                )
+                default_a = (
+                    suggested_a if suggested_a in signals else single_default
+                )
+                if len(signal_names) > 1:
+                    default_b = (
+                        suggested_b
+                        if suggested_b in signals and suggested_b != default_a
+                        else next(
+                            (name for name in signal_names if name != default_a),
+                            default_a,
+                        )
+                    )
+                else:
+                    default_b = default_a
+
+                pair_col_positive, pair_col_negative = st.columns(2)
+                with pair_col_positive:
+                    positive_name = st.selectbox(
+                        "Positive (+)",
+                        signal_names,
+                        index=signal_names.index(default_a),
+                        key="dm_positive",
+                        help="Non-inverting side of the differential pair.",
+                    )
+                with pair_col_negative:
+                    negative_name = st.selectbox(
+                        "Negative (\u2212)",
+                        signal_names,
+                        index=signal_names.index(default_b),
+                        key="dm_negative",
+                        help="Inverting side of the differential pair.",
+                    )
+                resolved = resolve_decoder_signals(
+                    signals,
+                    source_mode,
+                    positive_name=positive_name,
+                    negative_name=negative_name,
+                )
                 st.markdown(
-                    f'<div class="mso-hint">{suggestion_hint}</div>',
+                    f'<div class="mso-hint">Derived signal: {resolved["label"]}</div>',
                     unsafe_allow_html=True,
                 )
+                if suggestion_hint:
+                    st.markdown(
+                        f'<div class="mso-hint">{suggestion_hint}</div>',
+                        unsafe_allow_html=True,
+                    )
 
             _render_section_label("Timing configuration")
             timing_cols = st.columns(4)
@@ -1166,9 +1312,11 @@ def render_decoder(
                     key="dm_holdoff",
                 )
 
-            voltage = np.asarray(signals[channel_a], dtype=float)
-            paired_voltage = np.asarray(signals[channel_b], dtype=float)
-            source = channel_a
+            primary_voltage = resolved["primary"]
+            secondary_voltage = resolved["secondary"]
+            single_voltage = resolved["single_signal"]
+            decoder_signal_label = resolved["label"]
+            source = decoder_signal_label
             window_duration_us = (
                 float(decode_time[-1] - decode_time[0]) * 1e6
                 if len(decode_time)
@@ -1177,14 +1325,14 @@ def render_decoder(
 
             debug_log(
                 f"Differential Manchester: mode={analysis_mode} "
-                f"channel_a={channel_a} channel_b={channel_b} "
+                f"source={source_mode} signal={decoder_signal_label} "
                 f"bit_time_us={float(nominal_bit_us)} samples={len(decode_time)} "
                 f"window_us={window_duration_us:.3f}"
             )
             record_app_state(
                 analysis_mode=analysis_mode,
-                decoder_source=channel_a,
-                decoder_paired_channel=channel_b,
+                decoder_source_mode=source_mode,
+                decoder_signal=decoder_signal_label,
                 nominal_bit_time_us=float(nominal_bit_us),
                 window_samples=len(decode_time),
                 window_duration_us=round(window_duration_us, 6),
@@ -1194,10 +1342,10 @@ def render_decoder(
                 return render_multi_message_scan(
                     files,
                     decode_time,
-                    voltage,
-                    paired_voltage,
-                    channel_a,
-                    channel_b,
+                    primary_voltage,
+                    secondary_voltage,
+                    decoder_signal_label,
+                    source_mode,
                     float(nominal_bit_us),
                     alignment,
                     int(preamble_count),
@@ -1214,7 +1362,7 @@ def render_decoder(
                 ["Automatic", "Manual"],
                 key="dm_threshold_mode",
             )
-            levels = estimate_logic_levels_and_thresholds(voltage)
+            levels = estimate_logic_levels_and_thresholds(single_voltage)
             if threshold_mode == "Automatic":
                 low_threshold = float(levels["low_threshold"])
                 high_threshold = float(levels["high_threshold"])
@@ -1240,14 +1388,14 @@ def render_decoder(
             try:
                 logic, indices, transition_times = detect_transitions(
                     decode_time,
-                    voltage,
+                    single_voltage,
                     low_threshold,
                     high_threshold,
                     holdoff_us,
                 )
                 decoded = decode_waveform(
                     decode_time,
-                    voltage,
+                    single_voltage,
                     logic,
                     indices,
                     transition_times,

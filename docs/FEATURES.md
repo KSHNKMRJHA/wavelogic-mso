@@ -24,7 +24,7 @@ Everything in this list ships in the app. There is no paid tier.
 | SPI (4-wire) | CPOL/CPHA, active CS, bits/word, MSB-first, CS-gap merge |
 | I2C (7-bit) | full transcript: START, address+R/W, ACK/NACK per byte, STOP; end-of-stream robust |
 | Manchester (Biphase-L) | standard bit alignment with midpoint-transition handling |
-| Differential Manchester | explicit **Analysis mode**: Multi-message / Burst Scan or Single Frame; Channel A/B, nominal bit time, preamble count, clock alignment, transition hold-off |
+| Differential Manchester | explicit **Analysis mode**: Multi-message / Burst Scan or Single Frame; **Decoder signal source** (single/derived signal, or differential pair built from two physical channels); nominal bit time, preamble count, clock alignment, transition hold-off |
 | NRZ (clocked) | phase alignment, bits/word, MSB-first, robust clock fit |
 | PWM | per-pulse period and duty measured from the waveform |
 
@@ -34,12 +34,16 @@ Everything in this list ships in the app. There is no paid tier.
   with the paired-channel scanner and presents each independently validated
   message (count, per-message summary, message selector, per-message detail and
   message-level CSV exports).
-- **Single Frame** — runs the legacy single-frame decoder on Channel A, with
-  automatic/manual thresholds; appropriate for a window deliberately cropped to
-  one frame.
-- **Channel A / Channel B** selection with a convenience suggestion for a likely
-  active differential pair (a hint only, never a guaranteed protocol
-  identification).
+- **Single Frame** — runs the legacy single-frame decoder on the selected
+  signal, with automatic/manual thresholds; appropriate for a window
+  deliberately cropped to one frame.
+- **Decoder signal source** — the decoder always decodes one logical waveform:
+  - **Single / derived signal** — decode one waveform directly; the dropdown
+    lists physical channels and any math/derived channel you created.
+  - **Differential pair** — WaveLogic MSO constructs one differential waveform
+    (`Positive (+) − Negative (−)`) from two physical channels, with a
+    convenience suggestion for a likely active pair (a hint only, and only in
+    this mode; never a guaranteed protocol identification).
 - **Long-window guidance** — if the single-frame decoder rejects an oversized
   window, the app reports samples/duration/bit time and recommends narrowing the
   window or switching to Multi-message / Burst Scan; data is never silently

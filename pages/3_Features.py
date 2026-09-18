@@ -39,7 +39,7 @@ decoders = [
     ("SPI (4-wire)", "CPOL/CPHA, active chip-select level, bits per word, MSB-first option, CS-gap merging."),
     ("I2C (7-bit)", "Full transaction transcript: START, address + R/W, ACK/NACK per byte, STOP; end-of-stream robust."),
     ("Manchester (Biphase-L)", "Standard bit alignment with midpoint transition handling."),
-    ("Differential Manchester", "Explicit Analysis mode: Multi-message / Burst Scan (validated messages across a capture) or Single Frame (legacy decoder on one frame). Channels A/B, nominal bit time, preamble, alignment and hold-off."),
+    ("Differential Manchester", "Explicit Analysis mode: Multi-message / Burst Scan (validated messages across a capture) or Single Frame (legacy decoder on one frame). Decoder signal source: a single/derived signal (physical or math channel) or a differential pair built from two physical channels. Nominal bit time, preamble, alignment and hold-off."),
     ("NRZ (clocked)", "Phase alignment, bits per word, MSB-first, robust clock fitting."),
     ("PWM", "Per-pulse period and duty measured directly from the waveform, with stable clock domain checks."),
 ]

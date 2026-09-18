@@ -156,7 +156,7 @@ st.markdown(
 st.subheader("11. Differential Manchester")
 st.markdown(
     "Differential Manchester has two explicit **Analysis mode** options. Pick "
-    "the mode first, then the channels and timing."
+    "the mode first, then the decoder signal source and timing."
 )
 
 st.markdown("**Step A — Select the protocol**")
@@ -173,14 +173,23 @@ st.markdown(
     "analysis of that frame."
 )
 
-st.markdown("**Step C — Select Channel A / Channel B**")
+st.markdown("**Step C — Choose the decoder signal source**")
 st.markdown(
-    "- Choose the two waveform channels that carry the differential pair.  \n"
-    "- The UI may show a suggestion such as *Suggested differential pair: "
-    "CH3(V) / CH4(V)* when two channels are clearly the most active. The "
-    "suggestion is only a convenience and is **not** a guaranteed protocol "
-    "identification — you can always choose the channels manually.  \n"
-    "- Some captures use CH3/CH4; treat that as an example, not a rule."
+    "WaveLogic MSO always decodes **one logical waveform**. Choose how it is "
+    "provided:\n"
+    "- **Single / derived signal** *(default)* — pick one waveform under "
+    "**Decode signal**. The list contains every signal available to the "
+    "decoder: a physical channel (e.g. `CH3(V)`), or a math/derived channel you "
+    "created (e.g. `MATH: CH3 - CH4`).  \n"
+    "- **Differential pair** — WaveLogic MSO constructs one differential "
+    "waveform from two physical channels. Select **Positive (+)** and "
+    "**Negative (−)**; the panel shows the derived signal, e.g. "
+    "*Derived signal: CH3(V) − CH4(V)*.  \n"
+    "- The pair suggestion (e.g. *Suggested differential pair: CH3(V) / "
+    "CH4(V)*) appears **only** in differential-pair mode. It is a convenience, "
+    "**not** a guaranteed protocol identification; you can always select the "
+    "channels manually. Some captures use CH3/CH4 — treat that as an example, "
+    "not a rule."
 )
 
 st.markdown("**Step D — Timing configuration**")
@@ -204,7 +213,7 @@ st.markdown(
     "messages — not every region of electrical activity becomes a decoded "
     "message. If nothing is validated, the panel reports the scanner status, "
     "candidate regions, decoder calls and selected settings so you can adjust "
-    "the channel pair or bit time."
+    "the decoder signal or bit time."
 )
 
 st.markdown("**Single Frame — threshold controls**")

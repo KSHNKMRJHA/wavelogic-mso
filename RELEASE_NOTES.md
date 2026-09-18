@@ -1,6 +1,43 @@
 # Release Notes
 
+## Decoder signal source selection
+
+### Added
+
+- **Decoder Signal Source** selector for Differential Manchester, replacing the
+  Channel A / Channel B mental model:
+  - **Single / derived signal** *(default)* — decode one waveform: a physical
+    channel or a math/derived channel you created.
+  - **Differential pair** — WaveLogic MSO constructs one differential waveform
+    from two physical channels via **Positive (+)** / **Negative (−)**, shown as
+    a live `Derived signal: CH3 − CH4` readout.
+- The **Decode signal** list reuses the existing visible/math channel
+  representation, so a math channel already shown on the scope can be decoded
+  directly — no duplicate waveform computation.
+- Burst-scan results now state the decoded signal (`Decoder signal: …`).
+- The differential-pair suggestion now appears **only** in differential-pair
+  mode.
+
+### Changed
+
+- Multi-message single-signal scanning feeds the selected waveform to the
+  existing paired-channel scanner (same waveform on both inputs) and still never
+  runs the legacy decoder across a whole capture.
+- Single Frame accepts a single/derived signal; in differential-pair mode it
+  decodes the constructed differential waveform.
+- Documentation and in-app help updated to the "one logical signal" model.
+
+### Compatibility
+
+- Scanner heuristics, decoder acceptance criteria, timing algorithms, timestamp
+  reconstruction, and message validation are unchanged.
+- `decode_waveform()` and `analyzer_core.py` are unchanged.
+
 ## Explicit Differential Manchester analysis modes and burst-scan UX
+
+> **Superseded terminology:** the "Channel A / Channel B" control described
+> below was replaced by the **Decoder Signal Source** selector (see the section
+> above). Behaviour and acceptance model are unchanged.
 
 ### Added
 
