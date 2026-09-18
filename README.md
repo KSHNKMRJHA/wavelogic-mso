@@ -225,6 +225,20 @@ The core analysis lives in `analyzer_core.py` (UI-free, unit-testable); the UI
 lives in `app.py`; branding lives in `branding.py`; in-app docs live in
 `pages/`; decoder tests live in `tests/`.
 
+### Version/build label
+
+The header shows `v<N> · build <short-sha>`, where `<N>` is the commit count of
+the running commit (equal to the GitHub `main` history on a published branch)
+and `<short-sha>` is the first 7 characters of that commit. It is resolved
+dynamically, in this order:
+
+1. Git metadata when running from a checkout.
+2. `WAVELOGIC_COMMIT_COUNT` and `WAVELOGIC_COMMIT_SHA` environment variables.
+3. Streamlit secrets `wavelogic_commit_count` and `wavelogic_commit_sha`.
+
+If none are available (for example a deployment without `.git`), no version
+label is shown. The application never fails because build metadata is missing.
+
 ### Building the Windows installer from source
 
 Requires **Windows 10/11 x64** and [Inno Setup 6](https://jrsoftware.org/isinfo.php).

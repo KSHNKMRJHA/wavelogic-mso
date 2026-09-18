@@ -33,7 +33,7 @@ from analyzer_core import (
     scan_differential_manchester,
 )
 
-from branding import page_setup, render_brand_footer
+from branding import get_build_label, page_setup, render_brand_footer
 
 
 st.set_page_config(
@@ -131,6 +131,12 @@ h1 { font-size: 1.55rem !important; font-weight: 700 !important; }
 .mso-title { flex: 1; }
 .mso-title .main { font-size: 1.05rem; font-weight: 700; color: #f1f5fb; }
 .mso-title .sub { font-size: 0.78rem; color: var(--mso-muted); }
+.mso-version {
+    display: inline-block; margin-left: 10px; padding: 2px 8px;
+    font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em;
+    color: #9db4d8; border: 1px solid var(--mso-border); border-radius: 6px;
+    background: rgba(59,130,246,0.08); vertical-align: middle;
+}
 .mso-badge {
     font-size: 0.7rem; letter-spacing: 0.08em; color: #c7d5f2;
     border: 1px solid var(--mso-border); border-radius: 999px;
@@ -192,12 +198,16 @@ def inject_mso_theme() -> None:
 
 
 def render_header() -> None:
+    build_label = get_build_label()
+    version_html = (
+        f'<span class="mso-version">{build_label}</span>' if build_label else ""
+    )
     st.markdown(
-        """
+        f"""
         <div class="mso-header">
             <div class="mso-logo">&#9674;</div>
             <div class="mso-title">
-                <div class="main">WaveLogic MSO — Multi-Channel Protocol Analyzer</div>
+                <div class="main">WaveLogic MSO — Multi-Channel Protocol Analyzer{version_html}</div>
                 <div class="sub">CSV oscilloscope import &middot; universal signal decoding &middot; offline exports</div>
             </div>
             <div class="mso-badge">SCOPE + DECODE PACK</div>
