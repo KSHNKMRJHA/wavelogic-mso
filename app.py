@@ -201,6 +201,17 @@ code, pre {
     border: 1px solid var(--mso-border) !important;
 }
 [data-testid="stDataFrame"] { border: 1px solid var(--mso-border); border-radius: 10px; overflow: hidden; }
+
+.mso-section {
+    font-size: 0.68rem; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--mso-muted); font-weight: 700; margin: 12px 0 2px;
+    border-left: 3px solid var(--mso-accent); padding-left: 8px;
+}
+.mso-hint {
+    font-size: 0.76rem; color: #9db4d8; border: 1px dashed var(--mso-border);
+    border-radius: 8px; padding: 5px 10px; margin: 4px 0 2px;
+    background: rgba(59,130,246,0.06);
+}
 </style>
 """
 
@@ -672,6 +683,230 @@ def differential_message_result(
 # ============================================================
 # OPTIONAL DECODER
 # ============================================================
+MULTI_MESSAGE_MODE = "Multi-message / Burst Scan"
+SINGLE_FRAME_MODE = "Single Frame"
+
+_TOO_MANY_HALF_BIT_CELLS_MARKER = "too many half-bit cells"
+
+
+def _render_section_label(text: str) -> None:
+    st.markdown(f'<div class="mso-section">{text}</div>', unsafe_allow_html=True)
+
+
+def suggest_differential_pair(
+    signals: dict[str, np.ndarray],
+    max_samples: int = 50_000,
+) -> tuple[str | None, str | None, str | None]:
+    """Suggest the most plausibly active two-channel pair for burst scanning.
+
+    UI hint only — ranks channels by robust voltage spread over the current
+    window and returns the top two when they clearly dominate the rest. It never
+    overrides the user's manual Channel A / Channel B selection and is not a
+    confidence score.
+    """
+    spreads: dict[str, float] = {}
+    for name, values in signals.items():
+        try:
+            array = np.asarray(values, dtype=float)
+            if array.size == 0:
+                continue
+            step = max(1, array.size // max_samples)
+            sample = array[::step]
+            finite = sample[np.isfinite(sample)]
+            if finite.size < 20:
+                continue
+            spreads[name] = float(np.std(finite))
+        except Exception:
+            continue
+
+    if len(spreads) < 2:
+        return None, None, None
+
+    ranked = sorted(spreads.items(), key=lambda item: item[1], reverse=True)
+    (first_name, first_value), (second_name, second_value) = ranked[0], ranked[1]
+    if first_value <= 0 or second_value <= 0:
+        return None, None, None
+
+    others = [value for _, value in ranked[2:] if value > 0]
+    dominant = (not others) or (second_value > 2.0 * max(others))
+    if not dominant:
+        return None, None, None
+
+    return first_name, second_name, f"Suggested differential pair: {first_name} / {second_name}"
+
+
+def is_too_many_half_bit_cells_error(exc: BaseException) -> bool:
+    """True when the legacy decoder failed because the window is too long."""
+    return _TOO_MANY_HALF_BIT_CELLS_MARKER in str(exc).lower()
+
+
+def safe_logic_levels(voltage: np.ndarray) -> dict | None:
+    """Estimate levels without raising, for optional reference lines."""
+    try:
+        return estimate_logic_levels_and_thresholds(voltage)
+    except ValueError:
+        return None
+
+
+def render_long_window_guidance(
+    sample_count: int,
+    duration_us: float,
+    nominal_bit_us: float,
+) -> None:
+    """Actionable guidance when the single-frame decoder rejects a long window."""
+    st.warning("Single-frame decoder cannot process this entire window.")
+    columns = st.columns(3)
+    columns[0].metric("Window samples", f"{int(sample_count):,}")
+    columns[1].metric("Window duration", f"{float(duration_us):.3f} µs")
+    columns[2].metric("Nominal bit time", f"{float(nominal_bit_us):.4f} µs")
+    st.info(
+        "Either narrow the Window controls to one frame, or switch Analysis "
+        "Mode to Multi-message / Burst Scan."
+    )
+
+
+def render_multi_message_scan(
+    files: dict[str, bytes],
+    decode_time: np.ndarray,
+    channel_a_voltage: np.ndarray,
+    channel_b_voltage: np.ndarray,
+    channel_a_name: str,
+    channel_b_name: str,
+    nominal_bit_us: float,
+    alignment: str,
+    preamble_count: int,
+    holdoff_us: float,
+    timestamp_quality: dict,
+    time_axis_note: str,
+    capture_origin_s: float,
+    render_result,
+) -> dict[str, bytes]:
+    """Burst-scan workflow: locate, validate, summarise and present messages.
+
+    Candidate discovery and validation are delegated entirely to the existing
+    paired-channel scanner; the legacy decoder is never applied to the whole
+    capture here.
+    """
+    window_duration_us = (
+        float(decode_time[-1] - decode_time[0]) * 1e6 if len(decode_time) else 0.0
+    )
+
+    debug_log(
+        f"Burst scan start: A={channel_a_name} B={channel_b_name} "
+        f"bit_time_us={nominal_bit_us} preamble={int(preamble_count)} "
+        f"samples={len(decode_time)} window_us={window_duration_us:.3f}"
+    )
+
+    scan_result = scan_differential_manchester_cached(
+        decode_time,
+        channel_a_voltage,
+        channel_b_voltage,
+        nominal_bit_us,
+        alignment,
+        int(preamble_count),
+        holdoff_us,
+    )
+
+    messages = scan_result.get("messages", [])
+    message_count = int(scan_result.get("message_count", len(messages)))
+    scan_metrics = scan_result.get("metrics", {})
+    status = scan_result.get("status", "unknown")
+
+    debug_log(
+        f"Burst scan end: status={status} messages={message_count} "
+        f"decoder_calls={scan_metrics.get('decoder_calls')}"
+    )
+    record_app_state(
+        multi_message_status=status,
+        multi_message_count=message_count,
+        multi_message_candidate_regions=scan_metrics.get("candidate_region_count"),
+        multi_message_decoder_calls=scan_metrics.get("decoder_calls"),
+    )
+
+    _render_section_label("Result")
+    st.markdown("#### Differential Manchester — Burst Scan")
+    st.metric("Validated messages", message_count)
+
+    budget_notice = differential_budget_notice(scan_metrics)
+    if budget_notice:
+        st.warning(budget_notice)
+
+    if message_count == 0:
+        st.warning(
+            "No independently validated Differential Manchester messages "
+            "were found."
+        )
+        st.dataframe(
+            _diagnostics_frame([
+                ("Scanner status", status),
+                ("Candidate regions", scan_metrics.get("candidate_region_count", "n/a")),
+                ("Decoder calls", scan_metrics.get("decoder_calls", "n/a")),
+                (
+                    "Decoder-call budget hit",
+                    scan_metrics.get("decoder_call_budget_hit", "n/a"),
+                ),
+                ("Channel A", channel_a_name),
+                ("Channel B", channel_b_name),
+                ("Nominal bit time (µs)", f"{nominal_bit_us:.4f}"),
+                ("Window duration (µs)", f"{window_duration_us:.3f}"),
+            ]),
+            width="stretch",
+            hide_index=True,
+        )
+        st.info("Check the channel pair, bit time, and selected capture window.")
+        return files
+
+    window_start_from_capture_us = (
+        float(decode_time[0]) - capture_origin_s
+    ) * 1e6
+
+    summary_df = differential_message_summary(
+        messages,
+        window_start_from_capture_us=window_start_from_capture_us,
+    )
+    st.dataframe(summary_df, width="stretch", hide_index=True)
+    st.caption(
+        "Start_us/End_us are relative to the selected window start. Each "
+        "message is independently validated by the scanner."
+    )
+    files["dm_messages_summary.csv"] = dataframe_csv_bytes(summary_df)
+    files["dm_messages_bits.csv"] = dataframe_csv_bytes(
+        differential_message_bits(messages)
+    )
+
+    labels = [f"Message {number}" for number in range(1, len(messages) + 1)]
+    selected_label = st.selectbox("Select message", labels, key="dm_message_select")
+    selected_index = int(selected_label.split()[-1])
+
+    # Reference threshold lines reuse already-available levels; never required.
+    levels = safe_logic_levels(channel_a_voltage) or safe_logic_levels(
+        channel_b_voltage
+    )
+    if levels is None:
+        reference_low = float("nan")
+        reference_high = float("nan")
+    else:
+        reference_low = float(levels["low_threshold"])
+        reference_high = float(levels["high_threshold"])
+
+    detail_result = differential_message_result(
+        messages[selected_index - 1],
+        channel_a_name,
+        timestamp_quality,
+        time_axis_note,
+        reference_low,
+        reference_high,
+        holdoff_us,
+        selected_index,
+        message_count,
+        window_start_from_capture_us,
+    )
+    if detail_result.get("threshold_note"):
+        st.caption(detail_result["threshold_note"])
+    render_result(detail_result)
+    return files
+
+
 def render_decoder(
     time_s: np.ndarray,
     signals: dict[str, np.ndarray],
@@ -837,198 +1072,203 @@ def render_decoder(
 
     try:
         if protocol == "Differential Manchester (legacy project)":
-            source = pick_channel("Decoder source")
-            if source is None:
-                return files
-            voltage = np.asarray(signals[source], dtype=float)
-            record_app_state(decoder_source=source)
+            channel_names = list(signals)
+            suggested_a, suggested_b, suggestion_hint = suggest_differential_pair(
+                signals
+            )
 
-            with st.expander("Legacy decoder configuration", expanded=True):
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    nominal_bit_us = st.number_input(
-                        "Nominal bit time (µs)",
-                        min_value=0.001,
-                        value=12.8,
-                        step=0.1,
-                        format="%.4f",
+            default_a = suggested_a if suggested_a in signals else channel_names[0]
+            if len(channel_names) > 1:
+                default_b = (
+                    suggested_b
+                    if suggested_b in signals and suggested_b != default_a
+                    else next(
+                        (name for name in channel_names if name != default_a),
+                        default_a,
                     )
-                    preamble_count = st.number_input(
-                        "Preamble bit count",
-                        min_value=1,
-                        value=22,
-                        step=1,
-                    )
-                with col2:
-                    alignment = st.selectbox(
-                        "Clock alignment",
-                        [
-                            "First transition is bit start",
-                            "First transition is midpoint",
-                        ],
-                    )
-                    holdoff_us = st.number_input(
-                        "Transition hold-off (µs)",
-                        min_value=0.0,
-                        value=0.0,
-                        step=0.1,
-                        format="%.4f",
-                    )
-                with col3:
-                    threshold_mode = st.radio(
-                        "Threshold mode",
-                        ["Automatic", "Manual"],
-                    )
-                    levels = estimate_logic_levels_and_thresholds(voltage)
-                    if threshold_mode == "Automatic":
-                        low_threshold = float(levels["low_threshold"])
-                        high_threshold = float(levels["high_threshold"])
-                    else:
-                        low_threshold = st.number_input(
-                            "LOW threshold (V)",
-                            value=float(levels["low_threshold"]),
-                            step=0.05,
-                            format="%.5f",
-                        )
-                        high_threshold = st.number_input(
-                            "HIGH threshold (V)",
-                            value=float(levels["high_threshold"]),
-                            step=0.05,
-                            format="%.5f",
-                        )
+                )
+            else:
+                default_b = default_a
 
-            multi_message = st.checkbox(
-                "Detect multiple messages (multi-burst scan)",
-                value=False,
+            _render_section_label("Analysis mode")
+            analysis_mode = st.radio(
+                "Analysis mode",
+                [MULTI_MESSAGE_MODE, SINGLE_FRAME_MODE],
+                index=0,
+                horizontal=True,
+                key="dm_analysis_mode",
                 help=(
-                    "Runs the conservative paired-channel scanner once and presents "
-                    "each independently validated message separately. Single-message "
-                    "captures keep the existing presentation."
+                    "Burst Scan uses the paired-channel scanner to locate and "
+                    "independently validate every message in the window. Single "
+                    "Frame runs the legacy decoder on one frame."
                 ),
             )
 
-            if multi_message:
-                paired_source = st.selectbox(
-                    "Paired decoder channel",
-                    list(signals),
-                    index=list(signals).index(source),
-                    help=(
-                        "The scanner correlates two channels to locate message bursts. "
-                        "Selecting the same channel is allowed."
-                    ),
+            _render_section_label("Channels")
+            channel_col_a, channel_col_b = st.columns(2)
+            with channel_col_a:
+                channel_a = st.selectbox(
+                    "Channel A",
+                    channel_names,
+                    index=channel_names.index(default_a),
+                    key="dm_channel_a",
+                    help="Primary decoder channel.",
                 )
-                paired_voltage = np.asarray(signals[paired_source], dtype=float)
+            with channel_col_b:
+                channel_b = st.selectbox(
+                    "Channel B",
+                    channel_names,
+                    index=channel_names.index(default_b),
+                    key="dm_channel_b",
+                    help="Second channel correlated by the burst scanner.",
+                )
+            if suggestion_hint:
+                st.markdown(
+                    f'<div class="mso-hint">{suggestion_hint}</div>',
+                    unsafe_allow_html=True,
+                )
 
-                debug_log(
-                    f"Multi-message scan start: source={source} paired={paired_source} "
-                    f"bit_time_us={nominal_bit_us} preamble={int(preamble_count)}"
+            _render_section_label("Timing configuration")
+            timing_cols = st.columns(4)
+            with timing_cols[0]:
+                nominal_bit_us = st.number_input(
+                    "Nominal bit time (µs)",
+                    min_value=0.001,
+                    value=12.8,
+                    step=0.1,
+                    format="%.4f",
+                    key="dm_bit_time",
                 )
-                record_app_state(
-                    decoder_source=source,
-                    decoder_paired_channel=paired_source,
-                    multi_message=True,
+            with timing_cols[1]:
+                preamble_count = st.number_input(
+                    "Preamble bit count",
+                    min_value=1,
+                    value=22,
+                    step=1,
+                    key="dm_preamble",
+                )
+            with timing_cols[2]:
+                alignment = st.selectbox(
+                    "Clock alignment",
+                    [
+                        "First transition is bit start",
+                        "First transition is midpoint",
+                    ],
+                    key="dm_alignment",
+                )
+            with timing_cols[3]:
+                holdoff_us = st.number_input(
+                    "Transition hold-off (µs)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=0.1,
+                    format="%.4f",
+                    key="dm_holdoff",
                 )
 
-                scan_result = scan_differential_manchester_cached(
+            voltage = np.asarray(signals[channel_a], dtype=float)
+            paired_voltage = np.asarray(signals[channel_b], dtype=float)
+            source = channel_a
+            window_duration_us = (
+                float(decode_time[-1] - decode_time[0]) * 1e6
+                if len(decode_time)
+                else 0.0
+            )
+
+            debug_log(
+                f"Differential Manchester: mode={analysis_mode} "
+                f"channel_a={channel_a} channel_b={channel_b} "
+                f"bit_time_us={float(nominal_bit_us)} samples={len(decode_time)} "
+                f"window_us={window_duration_us:.3f}"
+            )
+            record_app_state(
+                analysis_mode=analysis_mode,
+                decoder_source=channel_a,
+                decoder_paired_channel=channel_b,
+                nominal_bit_time_us=float(nominal_bit_us),
+                window_samples=len(decode_time),
+                window_duration_us=round(window_duration_us, 6),
+            )
+
+            if analysis_mode == MULTI_MESSAGE_MODE:
+                return render_multi_message_scan(
+                    files,
                     decode_time,
                     voltage,
                     paired_voltage,
+                    channel_a,
+                    channel_b,
+                    float(nominal_bit_us),
+                    alignment,
+                    int(preamble_count),
+                    float(holdoff_us),
+                    timestamp_quality,
+                    time_axis_note,
+                    capture_origin_s,
+                    render_result,
+                )
+
+            _render_section_label("Single-frame configuration")
+            threshold_mode = st.radio(
+                "Threshold mode",
+                ["Automatic", "Manual"],
+                key="dm_threshold_mode",
+            )
+            levels = estimate_logic_levels_and_thresholds(voltage)
+            if threshold_mode == "Automatic":
+                low_threshold = float(levels["low_threshold"])
+                high_threshold = float(levels["high_threshold"])
+            else:
+                threshold_cols = st.columns(2)
+                with threshold_cols[0]:
+                    low_threshold = st.number_input(
+                        "LOW threshold (V)",
+                        value=float(levels["low_threshold"]),
+                        step=0.05,
+                        format="%.5f",
+                        key="dm_low_threshold",
+                    )
+                with threshold_cols[1]:
+                    high_threshold = st.number_input(
+                        "HIGH threshold (V)",
+                        value=float(levels["high_threshold"]),
+                        step=0.05,
+                        format="%.5f",
+                        key="dm_high_threshold",
+                    )
+
+            try:
+                logic, indices, transition_times = detect_transitions(
+                    decode_time,
+                    voltage,
+                    low_threshold,
+                    high_threshold,
+                    holdoff_us,
+                )
+                decoded = decode_waveform(
+                    decode_time,
+                    voltage,
+                    logic,
+                    indices,
+                    transition_times,
                     nominal_bit_us,
                     alignment,
                     int(preamble_count),
-                    holdoff_us,
                 )
-
-                messages = scan_result.get("messages", [])
-                message_count = int(scan_result.get("message_count", len(messages)))
-                scan_metrics = scan_result.get("metrics", {})
-
-                debug_log(
-                    f"Multi-message scan end: status={scan_result.get('status')} "
-                    f"messages={message_count} decoder_calls={scan_metrics.get('decoder_calls')}"
-                )
-                record_app_state(
-                    multi_message_status=scan_result.get("status"),
-                    multi_message_count=message_count,
-                )
-
-                st.markdown("#### Differential Manchester messages")
-                st.metric("Validated messages", message_count)
-
-                budget_notice = differential_budget_notice(scan_metrics)
-                if budget_notice:
-                    st.warning(budget_notice)
-
-                if message_count == 0:
-                    st.warning(
-                        "No independently validated Differential Manchester "
-                        "messages were found in the selected window."
+            except ValueError as exc:
+                if is_too_many_half_bit_cells_error(exc):
+                    debug_log(
+                        f"Single-frame long-window failure: {type(exc).__name__}: {exc}",
+                        "ERROR",
                     )
-                    st.caption(
-                        f"Status: {scan_result.get('status', 'unknown')} · "
-                        f"candidate regions: {scan_metrics.get('candidate_region_count', 'n/a')} · "
-                        f"decoder calls: {scan_metrics.get('decoder_calls', 'n/a')}"
+                    record_exception(exc)
+                    render_long_window_guidance(
+                        sample_count=len(decode_time),
+                        duration_us=window_duration_us,
+                        nominal_bit_us=float(nominal_bit_us),
                     )
                     return files
-
-                window_start_from_capture_us = (
-                    float(decode_time[0]) - capture_origin_s
-                ) * 1e6
-
-                summary_df = differential_message_summary(
-                    messages,
-                    window_start_from_capture_us=window_start_from_capture_us,
-                )
-                st.dataframe(summary_df, width="stretch", hide_index=True)
-                st.caption(
-                    "Start_us/End_us are relative to the selected window start. "
-                    "Manual threshold inputs apply to single-message mode only."
-                )
-                files["dm_messages_summary.csv"] = dataframe_csv_bytes(summary_df)
-                files["dm_messages_bits.csv"] = dataframe_csv_bytes(
-                    differential_message_bits(messages)
-                )
-
-                labels = [f"Message {number}" for number in range(1, len(messages) + 1)]
-                selected_label = st.selectbox("Select message", labels)
-                selected_index = int(selected_label.split()[-1])
-
-                # Reuse the already-estimated automatic levels for the reference
-                # threshold lines; no additional threshold estimation is run.
-                detail_result = differential_message_result(
-                    messages[selected_index - 1],
-                    source,
-                    timestamp_quality,
-                    time_axis_note,
-                    float(levels["low_threshold"]),
-                    float(levels["high_threshold"]),
-                    holdoff_us,
-                    selected_index,
-                    message_count,
-                    window_start_from_capture_us,
-                )
-                if detail_result.get("threshold_note"):
-                    st.caption(detail_result["threshold_note"])
-                render_result(detail_result)
-                return files
-
-            logic, indices, transition_times = detect_transitions(
-                decode_time,
-                voltage,
-                low_threshold,
-                high_threshold,
-                holdoff_us,
-            )
-            decoded = decode_waveform(
-                decode_time,
-                voltage,
-                logic,
-                indices,
-                transition_times,
-                nominal_bit_us,
-                alignment,
-                int(preamble_count),
-            )
+                raise
 
             summary = decoded["frame_summary"].copy()
             summary["Source"] = source
