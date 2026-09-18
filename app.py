@@ -11,6 +11,32 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
+# --- TEMPORARY DIAGNOSTIC (Streamlit Cloud import-resolution probe) ---
+# Must run BEFORE the named import below, which is the current failure point.
+# Reports which analyzer_core is actually resolved and whether it defines the
+# helper. Remove this block once the deployment path is confirmed.
+try:
+    import importlib as _diag_importlib
+    import os as _diag_os
+    import sys as _diag_sys
+
+    _diag_module = _diag_importlib.import_module("analyzer_core")
+    st.error(
+        "DIAGNOSTIC | analyzer_core.__file__={path} | "
+        "has_default_timestamp_mode={has} | sys.path[0]={sp0} | cwd={cwd}".format(
+            path=getattr(_diag_module, "__file__", "<no __file__>"),
+            has=hasattr(_diag_module, "default_timestamp_mode"),
+            sp0=(_diag_sys.path[0] if _diag_sys.path else "<empty>"),
+            cwd=_diag_os.getcwd(),
+        )
+    )
+except Exception as _diag_exc:  # pragma: no cover - diagnostic only
+    st.error(
+        "DIAGNOSTIC | analyzer_core probe failed: "
+        f"{type(_diag_exc).__name__}: {_diag_exc}"
+    )
+# --- END TEMPORARY DIAGNOSTIC ---
+
 from analyzer_core import (
     analyze_timestamp_quality,
     bits_to_hex,
