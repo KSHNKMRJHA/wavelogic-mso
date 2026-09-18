@@ -25,6 +25,7 @@ from analyzer_core import (
     decode_spi,
     decode_uart,
     decode_waveform,
+    default_timestamp_mode,
     detect_transitions,
     estimate_logic_levels_and_thresholds,
     find_time_column,
@@ -1366,18 +1367,6 @@ def main() -> None:
             index=0,
         )
 
-        timestamp_mode = st.radio(
-            "Time-axis mode",
-            [
-                "Use CSV timestamps directly",
-                "Reconstruct uniform timestamps",
-            ],
-            help=(
-                "Reconstruction is explicit because it assumes uniformly "
-                "sampled rows and trustworthy first/last timestamps."
-            ),
-        )
-
     original_time = pd.to_numeric(
         raw_df[time_column],
         errors="coerce",
@@ -1395,6 +1384,26 @@ def main() -> None:
         return
 
     input_quality = analyze_timestamp_quality(original_time)
+
+    with st.sidebar:
+        timestamp_options = [
+            "Use CSV timestamps directly",
+            "Reconstruct uniform timestamps",
+        ]
+        timestamp_mode = st.radio(
+            "Time-axis mode",
+            timestamp_options,
+            index=timestamp_options.index(
+                default_timestamp_mode(input_quality)
+            ),
+            help=(
+                "Reconstruction is explicit because it assumes uniformly "
+                "sampled rows and trustworthy first/last timestamps. "
+                "Captures with duplicate or coarse timestamps default to "
+                "reconstruction so the scope view and the decoder share "
+                "the same time axis."
+            ),
+        )
 
     try:
         # Crucially, prepare ONE time axis for the full CSV row order,

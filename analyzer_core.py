@@ -167,6 +167,18 @@ def prepare_time_axis(
     return analysis_time_s, quality
 
 
+def default_timestamp_mode(quality: dict) -> str:
+    """Return the safe default for the UI time-axis radio.
+
+    Captures with low-precision timestamps (duplicates/resets/coarse
+    resolution) default to uniform reconstruction so the scope view and the
+    decoder share the same time axis. Clean captures keep direct CSV time.
+    """
+    if isinstance(quality, dict) and quality.get("low_precision"):
+        return "Reconstruct uniform timestamps"
+    return "Use CSV timestamps directly"
+
+
 def minmax_envelope_downsample(
     time_us: np.ndarray,
     voltage: np.ndarray,
